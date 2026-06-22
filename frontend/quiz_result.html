@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Mock Test Performance Report - GovPrep{% endblock %}
+{% block content %}
+<div class="dashboard-header">
+    <span class="subject-badge badge-english" style="margin-bottom: 0.25rem;">DETAILED PERFORMANCE REPORT</span>
+    <h1 class="page-title">Test Results: {{ attempt.subject }}</h1>
+    <p class="page-subtitle">Submitted on {{ attempt.date_taken }}. Saved securely in our analytics database.</p>
+</div>
+<!-- PERFORMANCE OVERVIEW CARDS -->
+<div class="glass-card" style="margin-bottom: 1.5rem;">
+    <div class="result-stat-group">
+        <!-- Percentage Ring -->
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 0.75rem;">
+            <div class="result-percentage-ring" style="border-top-color: {% if attempt.percentage >= 70 %}var(--success){% elif attempt.percentage >= 45 %}var(--warning){% else %}var(--danger){% endif %};">
+                {{ attempt.percentage | round(0) }}%
+            </div>
+            <span class="metric-label" style="font-size: 0.9rem; font-weight: 600;">Overall Accuracy</span>
+        </div>
+        
+        <!-- Score grid -->
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; text-align: left;">
+            <div>
+                <p class="metric-label" style="font-size: 0.8rem; text-transform: uppercase;">Marks Secured</p>
+                <p style="font-size: 1.75rem; font-weight: 700;">{{ attempt.correct_answers }} <span style="font-size: 1rem; color: var(--text-muted); font-weight: 400;">/ {{ attempt.total_questions }}</span></p>
+            </div>
+            <div>
+                <p class="metric-label" style="font-size: 0.8rem; text-transform: uppercase;">Time Taken</p>
+                <p style="font-size: 1.75rem; font-weight: 700;">{{ attempt.time_taken // 60 }}m {{ attempt.time_taken % 60 }}s</p>
+            </div>
+            <div>
+                <p class="metric-label" style="font-size: 0.8rem; text-transform: uppercase;">Test Status</p>
+                <p style="font-size: 1.25rem; font-weight: 700; color: {% if attempt.percentage >= 50 %}var(--success){% else %}var(--danger){% endif %};">
+                    {% if attempt.percentage >= 50 %}✔️ PASS{% else %}❌ IMPROVEMENT REQUIRED{% endif %}
+                </p>
+            </div>
+            <div>
+                <p class="metric-label" style="font-size: 0.8rem; text-transform: uppercase;">Avg Time / Question</p>
+                <p style="font-size: 1.25rem; font-weight: 700;">
+                    {{ (attempt.time_taken / attempt.total_questions) | round(1) }}s
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <div style="display: flex; gap: 0.75rem; justify-content: flex-end; border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 1rem;">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">🏠 Back to Analytics Dashboard</a>
+        <a href="{{ url_for('quiz_select') }}" class="btn btn-primary">🔄 Take Another Mock Test</a>
+    </div>
+</div>
+<!-- DIAGNOSTIC SOLUTIONS FEEDBACK -->
+<div style="margin-top: 2rem; margin-bottom: 1rem;">
+    <h3>Educational Solution Key & Explanations</h3>
+    <p class="page-subtitle">Inspect question-by-question selections and detailed logical reviews:</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 1rem;">
+    {% for qa in questions_answers %}
+        <div class="review-item {% if qa.selected_option == qa.correct_option %}correct{% elif qa.selected_option is none %}unanswered{% else %}incorrect{% endif %}">
+            
+            <!-- Question header badge -->
+            <div class="review-header">
+                <div>
+                    <span>Question #{{ loop.index }}</span>
+                    <span style="margin-left: 0.5rem;" class="subject-badge badge-{{ qa.subject.split()[-1].lower() if 'Knowledge' not in qa.subject else 'gk' }}">
+                        {{ qa.subject }}
+                    </span>
+                </div>
+                
+                <div>
+                    {% if qa.selected_option == qa.correct_option %}
+                        <span style="color: var(--success); font-weight: 600;">✔️ Correct</span>
+                    {% elif qa.selected_option is none %}
+                        <span style="color: var(--warning); font-weight: 600;">⚠️ Unanswered</span>
+                    {% else %}
+                        <span style="color: var(--danger); font-weight: 600;">❌ Incorrect</span>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Question Text -->
+            <p style="font-weight: 600; font-size: 1rem; color: var(--text-main);">{{ qa.text }}</p>
+            
+            <!-- Options list displaying student choice vs correct choice -->
+            <div class="options-container" style="gap: 0.5rem;">
+                
+                <div class="review-option 
+                     {% if qa.correct_option == 'A' %}correct-choice{% endif %}
+                     {% if qa.selected_option == 'A' and qa.selected_option != qa.correct_option %}incorrect-choice{% endif %}">
+                    <span class="option-letter" style="margin-right: 0.5rem; width: 22px; height: 22px; font-size: 0.75rem;">A</span>
+                    <span>{{ qa.option_a }}</span>
+                    {% if qa.selected_option == 'A' %}
+                        <span style="margin-left: auto; font-size: 0.8rem; font-style: italic;">(Your Choice)</span>
+                    {% endif %}
+                </div>
+                
+                <div class="review-option 
+                     {% if qa.correct_option == 'B' %}correct-choice{% endif %}
+                     {% if qa.selected_option == 'B' and qa.selected_option != qa.correct_option %}incorrect-choice{% endif %}">
+                    <span class="option-letter" style="margin-right: 0.5rem; width: 22px; height: 22px; font-size: 0.75rem;">B</span>
+                    <span>{{ qa.option_b }}</span>
+                    {% if qa.selected_option == 'B' %}
+                        <span style="margin-left: auto; font-size: 0.8rem; font-style: italic;">(Your Choice)</span>
+                    {% endif %}
+                </div>
+                
+                <div class="review-option 
+                     {% if qa.correct_option == 'C' %}correct-choice{% endif %}
+                     {% if qa.selected_option == 'C' and qa.selected_option != qa.correct_option %}incorrect-choice{% endif %}">
+                    <span class="option-letter" style="margin-right: 0.5rem; width: 22px; height: 22px; font-size: 0.75rem;">C</span>
+                    <span>{{ qa.option_c }}</span>
+                    {% if qa.selected_option == 'C' %}
+                        <span style="margin-left: auto; font-size: 0.8rem; font-style: italic;">(Your Choice)</span>
+                    {% endif %}
+                </div>
+                
+                <div class="review-option 
+                     {% if qa.correct_option == 'D' %}correct-choice{% endif %}
+                     {% if qa.selected_option == 'D' and qa.selected_option != qa.correct_option %}incorrect-choice{% endif %}">
+                    <span class="option-letter" style="margin-right: 0.5rem; width: 22px; height: 22px; font-size: 0.75rem;">D</span>
+                    <span>{{ qa.option_d }}</span>
+                    {% if qa.selected_option == 'D' %}
+                        <span style="margin-left: auto; font-size: 0.8rem; font-style: italic;">(Your Choice)</span>
+                    {% endif %}
+                </div>
+                
+            </div>
+            
+            <!-- Explanation Text -->
+            {% if qa.explanation %}
+                <div class="review-explanation">
+                    <strong>💡 Solution Rationale:</strong> {{ qa.explanation }}
+                </div>
+            {% endif %}
+            
+        </div>
+    {% endfor %}
+</div>
+{% endblock %}
+

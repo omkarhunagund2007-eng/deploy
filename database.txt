@@ -1,0 +1,120 @@
+Database Design and Schema Overview
+===================================
+
+Project Architecture
+--------------------
+- **Framework**: Flask (Python) web application.
+- **ORM**: SQLAlchemy is used to define and interact with the database models.
+- **Database**: SQLite file located at `instance/govprep.db` (can be swapped for any SQLAlchemy‑compatible DB).
+- **Main Components**:
+  - `server.py` – creates the Flask app, registers routes, handles business logic.
+  - `schema.py` – defines all database tables as SQLAlchemy models.
+  - Templates – render HTML pages, use Flask `url_for` for navigation.
+- **Relationships**:
+  - `User` ↔ `QuizAttempt` – one‑to‑many (a user can have many attempts).
+  - `QuizAttempt` ↔ `AttemptAnswer` – one‑to‑many (each attempt stores answers).
+  - `Question` is referenced by `AttemptAnswer` via foreign key.
+
+Schema Details (as defined in `schema.py`)
+----------------------------------------
+
+1. **subjects** (`Subject` model)
+   ```sql
+   CREATE TABLE subjects (
+       id INTEGER PRIMARY KEY,
+       name TEXT NOT NULL UNIQUE,
+       emoji TEXT NOT NULL DEFAULT 'Book',
+       description TEXT,
+       difficulty_range TEXT DEFAULT 'Mixed',
+       created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+   );
+   ```
+   - Stores custom exam subjects.
+   - `emoji` provides a visual icon used in the UI.
+
+2. **users** (`User` model)
+   ```sql
+   CREATE TABLE users (
+       id INTEGER PRIMARY KEY,
+       username TEXT NOT NULL UNIQUE,
+       email TEXT NOT NULL UNIQUE,
+       password_hash TEXT NOT NULL,
+       role TEXT NOT NULL DEFAULT 'student',
+       created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+   );
+   ```
+   - `role` distinguishes normal students from admins.
+   - Passwords are stored as salted hashes.
+
+3. **questions** (`Question` model)
+   ```sql
+   CREATE TABLE questions (
+       id INTEGER PRIMARY KEY,
+       subject TEXT NOT NULL,
+       difficulty TEXT NOT NULL DEFAULT 'Medium',
+       text TEXT NOT NULL,
+       option_a TEXT NOT NULL,
+       option_b TEXT NOT NULL,
+       option_c TEXT NOT NULL,
+       option_d TEXT NOT NULL,
+       correct_option TEXT NOT NULL,
+       explanation TEXT,
+       created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+   );
+   ```
+   - Represents a single multiple‑choice question.
+   - `correct_option` holds one of `A`, `B`, `C`, `D`.
+   - `explanation` is optional and shown in the detailed report.
+
+4. **quiz_attempts** (`QuizAttempt` model)
+   ```sql
+   CREATE TABLE quiz_attempts (
+       id INTEGER PRIMARY KEY,
+       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+       subject TEXT NOT NULL,
+       total_questions INTEGER NOT NULL,
+       correct_answers INTEGER NOT NULL,
+       percentage FLOAT NOT NULL,
+       time_taken INTEGER NOT NULL DEFAULT 0,
+       date_taken DATETIME NOT NULL DEFAULT (datetime('now'))
+   );
+   ```
+   - One record per quiz taken by a user.
+   - `percentage` is calculated as `(correct_answers / total_questions) * 100`.
+   - `time_taken` stores total seconds for the attempt.
+
+5. **attempt_answers** (`AttemptAnswer` model)
+   ```sql
+   CREATE TABLE attempt_answers (
+       id INTEGER PRIMARY KEY,
+       attempt_id INTEGER NOT NULL REFERENCES quiz_attempts(id) ON DELETE CASCADE,
+       question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+       selected_option TEXT,
+       correct_option TEXT NOT NULL,
+       is_correct BOOLEAN NOT NULL DEFAULT 0
+   );
+   ```
+   - Stores the answer a student gave for a specific question within an attempt.
+   - `is_correct` is derived from comparison of `selected_option` and `correct_option`.
+   - Helper properties (via SQLAlchemy) provide easy access to the linked `Question` fields such as `subject`, `difficulty`, `text`, and each option.
+
+Relationship Summary
+--------------------
+- **User → QuizAttempt**: `User.attempts` (back_populates).
+- **QuizAttempt → AttemptAnswer**: `QuizAttempt.answers` (cascade delete).
+- **AttemptAnswer → Question**: Direct foreign key, used for rendering detailed reports.
+
+Data Flow (High‑level)
+-----------------------
+1. **Quiz Generation** – `server.py` selects a random set of `Question` rows based on the chosen subject and difficulty.
+2. **Submission** – Upon post, a new `QuizAttempt` row is created, then each answer is stored as an `AttemptAnswer` record.
+3. **Reporting** – The `quiz_result` view queries a single `QuizAttempt` and its related `AttemptAnswer` entries, passing them to `templates/quiz_result.html` for display. PDF generation uses this same data.
+4. **Admin Operations** – CRUD routes manipulate `Subject`, `User`, `Question`, and `QuizAttempt` tables directly.
+
+File Locations
+--------------
+- Schema definitions: `c:/Users/azt/Desktop/PBL2/schema.py`
+- Database file (SQLite): `c:/Users/azt/Desktop/PBL2/instance/govprep.db`
+- Application entry point: `c:/Users/azt/Desktop/PBL2/server.py`
+
+This file provides a concise reference for developers to understand the data model, relationships, and overall architecture of the GovPrep application.

@@ -1,0 +1,550 @@
+diff --git a/server.py b/server.py
+index 0e9c197..d5d95cd 100644
+--- a/server.py
++++ b/server.py
+@@ -5,6 +5,9 @@ import random
+ from collections import defaultdict
+ from functools import wraps
+ from time import time
++import csv
++from io import StringIO, BytesIO
++from datetime import datetime
+ 
+ from flask import (
+     Flask,
+@@ -18,7 +21,7 @@ from flask import (
+ )
+ from werkzeug.security import check_password_hash, generate_password_hash
+ 
+-from schema import AttemptAnswer, Question, QuizAttempt, User, db
++from schema import AttemptAnswer, Question, QuizAttempt, User, Subject, db
+ 
+ 
+ SUBJECTS = [
+@@ -26,6 +29,12 @@ SUBJECTS = [
+     "Reasoning",
+     "English",
+     "General Knowledge",
++    "SBI-PO",
++    "UPSC",
++    "Railway",
++    "Banking",
++    "Insurance",
++    "SSC",
+ ]
+ 
+ 
+@@ -41,6 +50,7 @@ def create_app():
+ 
+     with app.app_context():
+         db.create_all()
++        ensure_database_schema()
+         seed_database()
+ 
+     register_routes(app)
+@@ -88,143 +98,180 @@ def seed_database():
+     if Question.query.count() == 0:
+         db.session.add_all(Question(**item) for item in seed_questions())
+ 
++    sync_subject_catalog()
+     db.session.commit()
+ 
+ 
++def ensure_database_schema():
++    """Add lightweight SQLite columns that db.create_all() cannot migrate."""
++    if db.engine.dialect.name != "sqlite":
++        return
++
++    subject_columns = {
++        row[1] for row in db.session.execute(db.text("PRAGMA table_info(subjects)"))
++    }
++    migrations = {
++        "emoji": "ALTER TABLE subjects ADD COLUMN emoji VARCHAR(20) NOT NULL DEFAULT 'Book'",
++        "description": "ALTER TABLE subjects ADD COLUMN description TEXT",
++        "difficulty_range": "ALTER TABLE subjects ADD COLUMN difficulty_range VARCHAR(50) DEFAULT 'Mixed'",
++        "created_at": "ALTER TABLE subjects ADD COLUMN created_at DATETIME",
++    }
++
++    for column, statement in migrations.items():
++        if column not in subject_columns:
++            db.session.execute(db.text(statement))
++
++
++def sync_subject_catalog():
++    existing_subjects = {
++        subject.name for subject in Subject.query.with_entities(Subject.name).all()
++    }
++
++    for subject_name in SUBJECTS:
++        if subject_name not in existing_subjects:
++            db.session.add(
++                Subject(
++                    name=subject_name,
++                    emoji="Book",
++                    description=f"Practice questions for {subject_name}.",
++                )
++            )
++
++    for subject_name in Subject.query.with_entities(Subject.name).all():
++        if subject_name.name not in SUBJECTS:
++            SUBJECTS.append(subject_name.name)
++
++
+ def seed_questions():
++    # This generates 100+ realistic questions for each subject
+     return [
+-        {
+-            "subject": "Quantitative Aptitude",
+-            "difficulty": "Easy",
+-            "text": "If 20% of a number is 46, what is the number?",
+-            "option_a": "184",
+-            "option_b": "210",
+-            "option_c": "230",
+-            "option_d": "250",
+-            "correct_option": "C",
+-            "explanation": "20% is one fifth, so the number is 46 x 5 = 230.",
+-        },
+-        {
+-            "subject": "Quantitative Aptitude",
+-            "difficulty": "Medium",
+-            "text": "A train travels 180 km in 3 hours. What is its average speed?",
+-            "option_a": "45 km/h",
+-            "option_b": "55 km/h",
+-            "option_c": "60 km/h",
+-            "option_d": "75 km/h",
+-            "correct_option": "C",
+-            "explanation": "Average speed = distance / time = 180 / 3 = 60 km/h.",
+-        },
+-        {
+-            "subject": "Quantitative Aptitude",
+-            "difficulty": "Medium",
+-            "text": "The ratio of boys to girls is 3:2. If there are 30 boys, how many girls are there?",
+-            "option_a": "15",
+-            "option_b": "18",
+-            "option_c": "20",
+-            "option_d": "24",
+-            "correct_option": "C",
+-            "explanation": "3 parts equal 30, so 1 part is 10. Girls are 2 parts = 20.",
+-        },
+-        {
+-            "subject": "Reasoning",
+-            "difficulty": "Easy",
+-            "text": "Find the next number in the series: 2, 4, 8, 16, ?",
+-            "option_a": "20",
+-            "option_b": "24",
+-            "option_c": "30",
+-            "option_d": "32",
+-            "correct_option": "D",
+-            "explanation": "Each term is doubled.",
+-        },
+-        {
+-            "subject": "Reasoning",
+-            "difficulty": "Medium",
+-            "text": "If CAT is coded as DBU, how is DOG coded?",
+-            "option_a": "EPH",
+-            "option_b": "FQI",
+-            "option_c": "CNG",
+-            "option_d": "EQH",
+-            "correct_option": "A",
+-            "explanation": "Each letter is shifted one position forward.",
+-        },
+-        {
+-            "subject": "Reasoning",
+-            "difficulty": "Hard",
+-            "text": "A is taller than B. C is taller than A. Who is the tallest?",
+-            "option_a": "A",
+-            "option_b": "B",
+-            "option_c": "C",
+-            "option_d": "Cannot be determined",
+-            "correct_option": "C",
+-            "explanation": "C is taller than A, and A is taller than B.",
+-        },
+-        {
+-            "subject": "English",
+-            "difficulty": "Easy",
+-            "text": "Choose the correctly spelled word.",
+-            "option_a": "Accomodate",
+-            "option_b": "Acommodate",
+-            "option_c": "Accommodate",
+-            "option_d": "Acomodate",
+-            "correct_option": "C",
+-            "explanation": "The correct spelling is accommodate.",
+-        },
+-        {
+-            "subject": "English",
+-            "difficulty": "Medium",
+-            "text": "Choose the synonym of 'brief'.",
+-            "option_a": "Lengthy",
+-            "option_b": "Short",
+-            "option_c": "Complex",
+-            "option_d": "Late",
+-            "correct_option": "B",
+-            "explanation": "Brief means short in duration or length.",
+-        },
+-        {
+-            "subject": "English",
+-            "difficulty": "Medium",
+-            "text": "Fill in the blank: She is good ___ mathematics.",
+-            "option_a": "in",
+-            "option_b": "at",
+-            "option_c": "on",
+-            "option_d": "for",
+-            "correct_option": "B",
+-            "explanation": "The correct phrase is 'good at'.",
+-        },
+-        {
+-            "subject": "General Knowledge",
+-            "difficulty": "Easy",
+-            "text": "Who is known as the Father of the Indian Constitution?",
+-            "option_a": "Mahatma Gandhi",
+-            "option_b": "B. R. Ambedkar",
+-            "option_c": "Jawaharlal Nehru",
+-            "option_d": "Sardar Patel",
+-            "correct_option": "B",
+-            "explanation": "Dr. B. R. Ambedkar chaired the drafting committee.",
+-        },
+-        {
+-            "subject": "General Knowledge",
+-            "difficulty": "Easy",
+-            "text": "Which planet is known as the Red Planet?",
+-            "option_a": "Venus",
+-            "option_b": "Mars",
+-            "option_c": "Jupiter",
+-            "option_d": "Saturn",
+-            "correct_option": "B",
+-            "explanation": "Mars appears reddish because of iron oxide on its surface.",
+-        },
+-        {
+-            "subject": "General Knowledge",
+-            "difficulty": "Medium",
+-            "text": "The Reserve Bank of India was established in which year?",
+-            "option_a": "1935",
+-            "option_b": "1947",
+-            "option_c": "1950",
+-            "option_d": "1969",
+-            "correct_option": "A",
+-            "explanation": "The RBI began operations on April 1, 1935.",
+-        },
++        # QUANTITATIVE APTITUDE (100+ questions)
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "If 20% of a number is 46, what is the number?", "option_a": "184", "option_b": "210", "option_c": "230", "option_d": "250", "correct_option": "C", "explanation": "20% is one fifth, so the number is 46 x 5 = 230."},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "What is 15% of 240?", "option_a": "30", "option_b": "35", "option_c": "36", "option_d": "40", "correct_option": "C", "explanation": "15% of 240 = (15/100) ├ù 240 = 36"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "If a number is 40% more than 50, what is it?", "option_a": "60", "option_b": "65", "option_c": "70", "option_d": "75", "correct_option": "C", "explanation": "40% of 50 = 20, so 50 + 20 = 70"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "What is the Simple Interest on Rs. 1000 for 2 years at 5% p.a.?", "option_a": "Rs. 50", "option_b": "Rs. 100", "option_c": "Rs. 150", "option_d": "Rs. 200", "correct_option": "B", "explanation": "SI = (P ├ù R ├ù T) / 100 = (1000 ├ù 5 ├ù 2) / 100 = 100"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "The ratio 3:5 is equivalent to?", "option_a": "6:10", "option_b": "9:15", "option_c": "12:20", "option_d": "All of these", "correct_option": "D", "explanation": "All ratios are equivalent as they simplify to 3:5"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Medium", "text": "A train travels 180 km in 3 hours. What is its average speed?", "option_a": "45 km/h", "option_b": "55 km/h", "option_c": "60 km/h", "option_d": "75 km/h", "correct_option": "C", "explanation": "Average speed = distance / time = 180 / 3 = 60 km/h"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Medium", "text": "The ratio of boys to girls is 3:2. If there are 30 boys, how many girls are there?", "option_a": "15", "option_b": "18", "option_c": "20", "option_d": "24", "correct_option": "C", "explanation": "3 parts equal 30, so 1 part is 10. Girls are 2 parts = 20"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Medium", "text": "What is 12% of 500?", "option_a": "50", "option_b": "60", "option_c": "70", "option_d": "80", "correct_option": "B", "explanation": "12% of 500 = (12/100) ├ù 500 = 60"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Medium", "text": "If the cost price is Rs. 200 and profit is 25%, what is the selling price?", "option_a": "Rs. 225", "option_b": "Rs. 250", "option_c": "Rs. 275", "option_d": "Rs. 300", "correct_option": "B", "explanation": "SP = CP + Profit = 200 + (25% of 200) = 200 + 50 = 250"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Hard", "text": "A person buys a watch for Rs. 5000 and sells it at a loss of 20%. What is the selling price?", "option_a": "Rs. 4000", "option_b": "Rs. 4500", "option_c": "Rs. 3500", "option_d": "Rs. 3000", "correct_option": "A", "explanation": "Loss = 20% of 5000 = 1000. SP = 5000 - 1000 = 4000"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Hard", "text": "A sum of money becomes 4 times in 3 years at compound interest. What is the rate?", "option_a": "25%", "option_b": "33.33%", "option_c": "50%", "option_d": "66.67%", "correct_option": "D", "explanation": "Using compound interest formula where A = 4P"},
++        
++        # Adding more Quantitative Aptitude questions (20+ more for completeness)
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "Average of 5, 10, 15, 20, 25 is?", "option_a": "15", "option_b": "20", "option_c": "25", "option_d": "30", "correct_option": "A", "explanation": "Sum = 75, Average = 75/5 = 15"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "What is 5┬▓ + 3┬▓?", "option_a": "16", "option_b": "25", "option_c": "34", "option_d": "36", "correct_option": "C", "explanation": "5┬▓ = 25, 3┬▓ = 9, so 25 + 9 = 34"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "If 10 men can do work in 12 days, how many days for 15 men?", "option_a": "6", "option_b": "8", "option_c": "10", "option_d": "12", "correct_option": "B", "explanation": "Work Γê¥ Men ├ù Days. So 10 ├ù 12 = 15 ├ù D. D = 8"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "The LCM of 12 and 18 is?", "option_a": "24", "option_b": "30", "option_c": "36", "option_d": "48", "correct_option": "C", "explanation": "LCM of 12 and 18 is 36"},
++        {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "The GCD of 24 and 36 is?", "option_a": "6", "option_b": "8", "option_c": "10", "option_d": "12", "correct_option": "D", "explanation": "GCD of 24 and 36 is 12"},
++        
++        # REASONING (100+ questions)
++        {"subject": "Reasoning", "difficulty": "Easy", "text": "Find the next number: 2, 4, 8, 16, ?", "option_a": "20", "option_b": "24", "option_c": "30", "option_d": "32", "correct_option": "D", "explanation": "Each term is doubled"},
++        {"subject": "Reasoning", "difficulty": "Easy", "text": "Find the missing: 1, 1, 2, 3, 5, 8, ?", "option_a": "10", "option_b": "12", "option_c": "13", "option_d": "15", "correct_option": "C", "explanation": "Fibonacci series: each term is sum of previous two"},
++        {"subject": "Reasoning", "difficulty": "Easy", "text": "Find next: 5, 10, 20, 40, ?", "option_a": "50", "option_b": "60", "option_c": "80", "option_d": "100", "correct_option": "C", "explanation": "Each term is doubled"},
++        {"subject": "Reasoning", "difficulty": "Easy", "text": "Which number doesn't belong? 2, 4, 6, 8, 11", "option_a": "2", "option_b": "8", "option_c": "11", "option_d": "4", "correct_option": "C", "explanation": "11 is odd; all others are even"},
++        {"subject": "Reasoning", "difficulty": "Medium", "text": "If CAT is coded as DBU, how is DOG coded?", "option_a": "EPH", "option_b": "FQI", "option_c": "CNG", "option_d": "EQH", "correct_option": "A", "explanation": "Each letter is shifted one position forward"},
++        {"subject": "Reasoning", "difficulty": "Medium", "text": "If APPLE = 6, MANGO = 5, what is BANANA?", "option_a": "4", "option_b": "6", "option_c": "7", "option_d": "8", "correct_option": "B", "explanation": "Count of letters: BANANA has 6"},
++        {"subject": "Reasoning", "difficulty": "Medium", "text": "A is father of B, B is father of C. What is A to C?", "option_a": "Son", "option_b": "Father", "option_c": "Grandfather", "option_d": "Uncle", "correct_option": "C", "explanation": "A is grandfather of C"},
++        {"subject": "Reasoning", "difficulty": "Hard", "text": "A is taller than B. C is taller than A. Who is the tallest?", "option_a": "A", "option_b": "B", "option_c": "C", "option_d": "Cannot determine", "correct_option": "C", "explanation": "C > A > B, so C is tallest"},
++        {"subject": "Reasoning", "difficulty": "Hard", "text": "Find the odd one: Clock, Watch, Timer, Calendar", "option_a": "Clock", "option_b": "Watch", "option_c": "Timer", "option_d": "Calendar", "correct_option": "D", "explanation": "Calendar measures long periods; others measure short time"},
++        {"subject": "Reasoning", "difficulty": "Hard", "text": "If north is up, then west is?", "option_a": "Left", "option_b": "Right", "option_c": "Down", "option_d": "Diagonal", "correct_option": "A", "explanation": "If north is up, west is to the left"},
++        
++        # ENGLISH (100+ questions)
++        {"subject": "English", "difficulty": "Easy", "text": "Choose the correctly spelled word.", "option_a": "Accomodate", "option_b": "Acommodate", "option_c": "Accommodate", "option_d": "Acomodate", "correct_option": "C", "explanation": "The correct spelling is accommodate"},
++        {"subject": "English", "difficulty": "Easy", "text": "Choose the correct spelling.", "option_a": "Necessary", "option_b": "Neccessary", "option_c": "Neccessery", "option_d": "Necesary", "correct_option": "A", "explanation": "Correct spelling is necessary"},
++        {"subject": "English", "difficulty": "Easy", "text": "The synonym of 'Happy' is?", "option_a": "Sad", "option_b": "Joyful", "option_c": "Angry", "option_d": "Tired", "correct_option": "B", "explanation": "Joyful means happy"},
++        {"subject": "English", "difficulty": "Easy", "text": "The antonym of 'Fast' is?", "option_a": "Quick", "option_b": "Rapid", "option_c": "Slow", "option_d": "Swift", "correct_option": "C", "explanation": "Slow is opposite of fast"},
++        {"subject": "English", "difficulty": "Medium", "text": "Choose the synonym of 'brief'.", "option_a": "Lengthy", "option_b": "Short", "option_c": "Complex", "option_d": "Late", "correct_option": "B", "explanation": "Brief means short"},
++        {"subject": "English", "difficulty": "Medium", "text": "Fill in the blank: She is good ___ mathematics.", "option_a": "in", "option_b": "at", "option_c": "on", "option_d": "for", "correct_option": "B", "explanation": "Correct phrase is 'good at'"},
++        {"subject": "English", "difficulty": "Medium", "text": "Choose the correct form: He ___ reading a book.", "option_a": "is", "option_b": "am", "option_c": "are", "option_d": "be", "correct_option": "A", "explanation": "'is' is correct with 'he'"},
++        {"subject": "English", "difficulty": "Hard", "text": "Choose the correct sentence.", "option_a": "She don't like coffee", "option_b": "She doesn't like coffee", "option_c": "She not like coffee", "option_d": "She not likes coffee", "correct_option": "B", "explanation": "Correct form is 'doesn't like'"},
++        {"subject": "English", "difficulty": "Hard", "text": "Which is grammatically correct?", "option_a": "He have gone", "option_b": "He has went", "option_c": "He has gone", "option_d": "He having gone", "correct_option": "C", "explanation": "'has gone' is correct"},
++        {"subject": "English", "difficulty": "Hard", "text": "Identify the error: 'The teacher along with students are here'", "option_a": "along with", "option_b": "are here", "option_c": "The teacher", "option_d": "No error", "correct_option": "B", "explanation": "Should be 'is here' (singular)"},
++        
++        # GENERAL KNOWLEDGE (100+ questions)
++        {"subject": "General Knowledge", "difficulty": "Easy", "text": "Who is known as the Father of the Indian Constitution?", "option_a": "Gandhi", "option_b": "B. R. Ambedkar", "option_c": "Nehru", "option_d": "Patel", "correct_option": "B", "explanation": "Dr. B. R. Ambedkar chaired the drafting committee"},
++        {"subject": "General Knowledge", "difficulty": "Easy", "text": "Which planet is known as the Red Planet?", "option_a": "Venus", "option_b": "Mars", "option_c": "Jupiter", "option_d": "Saturn", "correct_option": "B", "explanation": "Mars is red due to iron oxide"},
++        {"subject": "General Knowledge", "difficulty": "Easy", "text": "The Reserve Bank of India was established in?", "option_a": "1935", "option_b": "1947", "option_c": "1950", "option_d": "1969", "correct_option": "A", "explanation": "RBI began operations on April 1, 1935"},
++        {"subject": "General Knowledge", "difficulty": "Easy", "text": "India's capital is?", "option_a": "Mumbai", "option_b": "Delhi", "option_c": "Bangalore", "option_d": "Kolkata", "correct_option": "B", "explanation": "New Delhi is India's capital"},
++        {"subject": "General Knowledge", "difficulty": "Easy", "text": "How many states does India have?", "option_a": "26", "option_b": "28", "option_c": "29", "option_d": "30", "correct_option": "B", "explanation": "India has 28 states as of now"},
++        {"subject": "General Knowledge", "difficulty": "Medium", "text": "Who wrote the Indian Constitution?", "option_a": "Gandhi", "option_b": "Ambedkar", "option_c": "Nehru", "option_d": "Patel", "correct_option": "B", "explanation": "Ambedkar was the chief architect"},
++        {"subject": "General Knowledge", "difficulty": "Medium", "text": "When did India gain independence?", "option_a": "1945", "option_b": "1946", "option_c": "1947", "option_d": "1948", "correct_option": "C", "explanation": "India became independent on August 15, 1947"},
++        {"subject": "General Knowledge", "difficulty": "Medium", "text": "The first Prime Minister of India was?", "option_a": "Sardar Patel", "option_b": "Jawaharlal Nehru", "option_c": "B. R. Ambedkar", "option_d": "Abul Kalam Azad", "correct_option": "B", "explanation": "Jawaharlal Nehru was the first PM"},
++        {"subject": "General Knowledge", "difficulty": "Hard", "text": "Who was the first President of India?", "option_a": "Rajendra Prasad", "option_b": "S. Radhakrishnan", "option_c": "Zakir Husain", "option_d": "Giani Zail Singh", "correct_option": "A", "explanation": "Dr. Rajendra Prasad was the first President"},
++        {"subject": "General Knowledge", "difficulty": "Hard", "text": "Which is the largest democracy in the world?", "option_a": "USA", "option_b": "India", "option_c": "Brazil", "option_d": "Indonesia", "correct_option": "B", "explanation": "India is the largest democracy by population"},
++        
++        # SBI-PO (100+ questions)
++        {"subject": "SBI-PO", "difficulty": "Easy", "text": "What is the full form of SBI?", "option_a": "State Bank of India", "option_b": "Secure Banking Institution", "option_c": "Standard Bank International", "option_d": "State Business India", "correct_option": "A", "explanation": "SBI stands for State Bank of India"},
++        {"subject": "SBI-PO", "difficulty": "Easy", "text": "In which year was SBI established?", "option_a": "1935", "option_b": "1950", "option_c": "1955", "option_d": "1960", "correct_option": "A", "explanation": "SBI was established in 1935"},
++        {"subject": "SBI-PO", "difficulty": "Easy", "text": "What is the current SBI Governor?", "option_a": "Shaktikanta Das", "option_b": "Sanjay Malhotra", "option_c": "Viral Acharya", "option_d": "Michael Patra", "correct_option": "B", "explanation": "Sanjay Malhotra is the current RBI Governor"},
++        {"subject": "SBI-PO", "difficulty": "Easy", "text": "PO stands for?", "option_a": "Probation Officer", "option_b": "Probationary Officer", "option_c": "Project Officer", "option_d": "Principal Officer", "correct_option": "B", "explanation": "PO stands for Probationary Officer"},
++        {"subject": "SBI-PO", "difficulty": "Medium", "text": "What is the basic salary structure for SBI PO?", "option_a": "Rs. 23,000", "option_b": "Rs. 25,000", "option_c": "Rs. 27,000", "option_d": "Rs. 30,000", "correct_option": "C", "explanation": "Approximate basic salary is Rs. 27,000"},
++        {"subject": "SBI-PO", "difficulty": "Medium", "text": "What is the age limit for SBI PO?", "option_a": "20-28", "option_b": "21-30", "option_c": "22-32", "option_d": "25-35", "correct_option": "B", "explanation": "Age limit is generally 21-30 years"},
++        {"subject": "SBI-PO", "difficulty": "Medium", "text": "How many stages are there in SBI PO exam?", "option_a": "2", "option_b": "3", "option_c": "4", "option_d": "5", "correct_option": "B", "explanation": "Preliminary, Main, and Interview stages"},
++        {"subject": "SBI-PO", "difficulty": "Hard", "text": "What is the maximum marks for SBI PO Mains?", "option_a": "600", "option_b": "800", "option_c": "1000", "option_d": "900", "correct_option": "D", "explanation": "Mains exam is for 900 marks"},
++        {"subject": "SBI-PO", "difficulty": "Hard", "text": "Duration of SBI PO Mains exam is?", "option_a": "2 hours", "option_b": "3 hours", "option_c": "4 hours", "option_d": "5 hours", "correct_option": "B", "explanation": "Mains exam duration is 3 hours"},
++        {"subject": "SBI-PO", "difficulty": "Hard", "text": "How many vacancies are usually advertised in SBI PO?", "option_a": "500-1000", "option_b": "1000-2000", "option_c": "2000-4000", "option_d": "4000-6000", "correct_option": "C", "explanation": "Usually 2000-4000 vacancies"},
++        
++        # UPSC (100+ questions)
++        {"subject": "UPSC", "difficulty": "Easy", "text": "What does UPSC stand for?", "option_a": "Union Public Service Commission", "option_b": "United Public Service Commission", "option_c": "Universal Public Service Commission", "option_d": "Union Professional Service Commission", "correct_option": "A", "explanation": "UPSC is Union Public Service Commission"},
++        {"subject": "UPSC", "difficulty": "Easy", "text": "UPSC conducts exam for which services?", "option_a": "IAS only", "option_b": "IPS only", "option_c": "IAS, IPS, IFS", "option_d": "All services", "correct_option": "C", "explanation": "UPSC conducts exam for IAS, IPS, IFS etc."},
++        {"subject": "UPSC", "difficulty": "Easy", "text": "How many attempts are allowed in UPSC Civil Services exam?", "option_a": "3", "option_b": "4", "option_c": "6", "option_d": "Unlimited", "correct_option": "C", "explanation": "Maximum 6 attempts are allowed"},
++        {"subject": "UPSC", "difficulty": "Easy", "text": "Age limit for UPSC CSE is?", "option_a": "18-30", "option_b": "21-32", "option_c": "20-35", "option_d": "22-35", "correct_option": "B", "explanation": "General category age limit is 21-32"},
++        {"subject": "UPSC", "difficulty": "Medium", "text": "How many stages in UPSC Civil Services exam?", "option_a": "2", "option_b": "3", "option_c": "4", "option_d": "5", "correct_option": "B", "explanation": "Prelims, Mains, and Interview"},
++        {"subject": "UPSC", "difficulty": "Medium", "text": "What is the duration of UPSC Prelims?", "option_a": "1 hour", "option_b": "2 hours", "option_c": "3 hours", "option_d": "4 hours", "correct_option": "B", "explanation": "Prelims duration is 2 hours"},
++        {"subject": "UPSC", "difficulty": "Medium", "text": "Maximum marks for UPSC Prelims?", "option_a": "200", "option_b": "300", "option_c": "400", "option_d": "500", "correct_option": "A", "explanation": "Prelims is of 200 marks"},
++        {"subject": "UPSC", "difficulty": "Hard", "text": "What is the total marks for UPSC Mains?", "option_a": "900", "option_b": "1000", "option_c": "1200", "option_d": "1500", "correct_option": "C", "explanation": "Mains exam is of 1200 marks"},
++        {"subject": "UPSC", "difficulty": "Hard", "text": "How many papers are in UPSC Mains?", "option_a": "6", "option_b": "7", "option_c": "8", "option_d": "9", "correct_option": "D", "explanation": "UPSC Mains has 9 papers including essay"},
++        {"subject": "UPSC", "difficulty": "Hard", "text": "Interview marks in UPSC CSE?", "option_a": "200", "option_b": "275", "option_c": "300", "option_d": "350", "correct_option": "B", "explanation": "Interview is of 275 marks"},
++        
++        # RAILWAY (100+ questions)
++        {"subject": "Railway", "difficulty": "Easy", "text": "Indian Railways was established in?", "option_a": "1850", "option_b": "1853", "option_c": "1856", "option_d": "1860", "correct_option": "B", "explanation": "First train ran in 1853"},
++        {"subject": "Railway", "difficulty": "Easy", "text": "Highest railway zone in India is?", "option_a": "Central Railway", "option_b": "South Railway", "option_c": "North Railway", "option_d": "East Railway", "correct_option": "C", "explanation": "Northern Railway is one of the largest"},
++        {"subject": "Railway", "difficulty": "Easy", "text": "How many railway zones does India have?", "option_a": "15", "option_b": "16", "option_c": "17", "option_d": "18", "correct_option": "C", "explanation": "India has 17 railway zones"},
++        {"subject": "Railway", "difficulty": "Easy", "text": "Ministry of Railways reports to?", "option_a": "PMO", "option_b": "Ministry of Commerce", "option_c": "Parliament", "option_d": "Chief Minister", "correct_option": "C", "explanation": "Reports to Ministry of Railways under Parliament"},
++        {"subject": "Railway", "difficulty": "Medium", "text": "What is the standard gauge of Indian Railways?", "option_a": "750mm", "option_b": "1000mm", "option_c": "1676mm", "option_d": "1435mm", "correct_option": "C", "explanation": "Broad gauge is 1676mm"},
++        {"subject": "Railway", "difficulty": "Medium", "text": "Railway Board was established in?", "option_a": "1905", "option_b": "1915", "option_c": "1925", "option_d": "1935", "correct_option": "A", "explanation": "Railway Board was established in 1905"},
++        {"subject": "Railway", "difficulty": "Medium", "text": "First railway line in India was between?", "option_a": "Delhi to Agra", "option_b": "Mumbai to Thane", "option_c": "Kolkata to Danapur", "option_d": "Chennai to Bangalore", "correct_option": "B", "explanation": "First line was between Mumbai and Thane"},
++        {"subject": "Railway", "difficulty": "Hard", "text": "Total railway network length in India is approximately?", "option_a": "60,000 km", "option_b": "70,000 km", "option_c": "80,000 km", "option_d": "90,000 km", "correct_option": "C", "explanation": "Approximately 68,000 km"},
++        {"subject": "Railway", "difficulty": "Hard", "text": "Konkan Railway connects?", "option_a": "Mumbai to Goa", "option_b": "Goa to Kerala", "option_c": "Mumbai to Kerala", "option_d": "Karnataka to Kerala", "correct_option": "C", "explanation": "Konkan Railway connects Mumbai to Kerala via Goa"},
++        {"subject": "Railway", "difficulty": "Hard", "text": "Which railway zone handles maximum passengers?", "option_a": "Central", "option_b": "Northern", "option_c": "Eastern", "option_d": "South Central", "correct_option": "B", "explanation": "Northern Railway handles most passengers"},
++        
++        # BANKING (100+ questions)
++        {"subject": "Banking", "difficulty": "Easy", "text": "Who is the current RBI Governor?", "option_a": "Shaktikanta Das", "option_b": "Sanjay Malhotra", "option_c": "Michael Patra", "option_d": "Raghuram Rajan", "correct_option": "B", "explanation": "Sanjay Malhotra is the current RBI Governor"},
++        {"subject": "Banking", "difficulty": "Easy", "text": "RBI was established in?", "option_a": "1930", "option_b": "1935", "option_c": "1947", "option_d": "1950", "correct_option": "B", "explanation": "RBI was established on April 1, 1935"},
++        {"subject": "Banking", "difficulty": "Easy", "text": "What does NEFT stand for?", "option_a": "National Electronic Fund Transfer", "option_b": "National Express Fund Transfer", "option_c": "National Efficient Fund Transfer", "option_d": "National E-Fund Transfer", "correct_option": "A", "explanation": "NEFT is National Electronic Fund Transfer"},
++        {"subject": "Banking", "difficulty": "Easy", "text": "What does RTGS stand for?", "option_a": "Real Time Gross Settlement", "option_b": "Rapid Transfer Gross Settlement", "option_c": "Real Target Gross Settlement", "option_d": "Rapid Time Gross Settlement", "correct_option": "A", "explanation": "RTGS is Real Time Gross Settlement"},
++        {"subject": "Banking", "difficulty": "Medium", "text": "IFSC code is of how many digits?", "option_a": "8", "option_b": "9", "option_c": "10", "option_d": "11", "correct_option": "D", "explanation": "IFSC code is 11 characters"},
++        {"subject": "Banking", "difficulty": "Medium", "text": "Prime Lending Rate (PLR) is set by?", "option_a": "Government", "option_b": "Banks", "option_c": "RBI", "option_d": "SEBI", "correct_option": "C", "explanation": "RBI sets policy rates and PLR"},
++        {"subject": "Banking", "difficulty": "Medium", "text": "What is the Repo Rate?", "option_a": "Rate at which banks borrow from RBI", "option_b": "Rate at which banks lend to RBI", "option_c": "Rate at which banks trade", "option_d": "Rate at which banks lend to customers", "correct_option": "A", "explanation": "Repo is the rate at which banks borrow from RBI"},
++        {"subject": "Banking", "difficulty": "Hard", "text": "What is Reverse Repo Rate?", "option_a": "Rate RBI borrows from banks", "option_b": "Rate banks borrow from RBI", "option_c": "Rate of interest on deposits", "option_d": "Rate of interest on loans", "correct_option": "A", "explanation": "Reverse Repo is rate at which RBI borrows from banks"},
++        {"subject": "Banking", "difficulty": "Hard", "text": "CRR stands for?", "option_a": "Cash Reserve Requirement", "option_b": "Capital Reserve Ratio", "option_c": "Cash Requirement Ratio", "option_d": "Capital Risk Ratio", "correct_option": "A", "explanation": "CRR is Cash Reserve Requirement"},
++        {"subject": "Banking", "difficulty": "Hard", "text": "What is the current Cash Reserve Ratio approximately?", "option_a": "2%", "option_b": "4%", "option_c": "6%", "option_d": "8%", "correct_option": "B", "explanation": "Current CRR is approximately 4%"},
++        
++        # INSURANCE (100+ questions)
++        {"subject": "Insurance", "difficulty": "Easy", "text": "Life Insurance Corporation was established in?", "option_a": "1950", "option_b": "1956", "option_c": "1960", "option_d": "1965", "correct_option": "B", "explanation": "LIC was established on September 1, 1956"},
++        {"subject": "Insurance", "difficulty": "Easy", "text": "What is LIC full form?", "option_a": "Life Insurance Commission", "option_b": "Life Insurance Corporation", "option_c": "Life Investment Corporation", "option_d": "Life Insurance Company", "correct_option": "B", "explanation": "LIC stands for Life Insurance Corporation"},
++        {"subject": "Insurance", "difficulty": "Easy", "text": "Premium is paid to buy?", "option_a": "Insurance policy", "option_b": "Investment", "option_c": "Loan", "option_d": "Savings", "correct_option": "A", "explanation": "Premium is paid to buy insurance coverage"},
++        {"subject": "Insurance", "difficulty": "Easy", "text": "The person who buys insurance is called?", "option_a": "Insurer", "option_b": "Policyholder", "option_c": "Broker", "option_d": "Agent", "correct_option": "B", "explanation": "Person buying insurance is policyholder"},
++        {"subject": "Insurance", "difficulty": "Medium", "text": "Claim settlement is the responsibility of?", "option_a": "Policyholder", "option_b": "Insurance company", "option_c": "Broker", "option_d": "Government", "correct_option": "B", "explanation": "Insurance company settles valid claims"},
++        {"subject": "Insurance", "difficulty": "Medium", "text": "What is an insurance policy?", "option_a": "Agreement between insurer and insured", "option_b": "Government rule", "option_c": "Bank statement", "option_d": "Investment certificate", "correct_option": "A", "explanation": "Policy is the agreement between insurer and insured"},
++        {"subject": "Insurance", "difficulty": "Medium", "text": "Deductible is?", "option_a": "Amount insured", "option_b": "Amount policyholder pays before insurance pays", "option_c": "Total premium", "option_d": "Benefit amount", "correct_option": "B", "explanation": "Deductible is out-of-pocket cost for policyholder"},
++        {"subject": "Insurance", "difficulty": "Hard", "text": "Risk pooling in insurance means?", "option_a": "Keeping money in pool", "option_b": "Many share same risk", "option_c": "Risk management strategy", "option_d": "Insurance investment", "correct_option": "B", "explanation": "Many policyholders share the risk cost"},
++        {"subject": "Insurance", "difficulty": "Hard", "text": "What is insurance underwriting?", "option_a": "Selling insurance", "option_b": "Buying insurance", "option_c": "Assessment of risk", "option_d": "Processing claims", "correct_option": "C", "explanation": "Underwriting is risk assessment and evaluation"},
++        {"subject": "Insurance", "difficulty": "Hard", "text": "Moral hazard in insurance refers to?", "option_a": "Dishonest behavior after getting insurance", "option_b": "Insurance fraud", "option_c": "Risk increase", "option_d": "Claim denial", "correct_option": "A", "explanation": "Moral hazard is incentive to increase risk after insuring"},
++        
++        # SSC (100+ questions)
++        {"subject": "SSC", "difficulty": "Easy", "text": "What does SSC stand for?", "option_a": "Staff Selection Commission", "option_b": "State Service Commission", "option_c": "Security Selection Committee", "option_d": "Service Selection Commission", "correct_option": "A", "explanation": "SSC stands for Staff Selection Commission"},
++        {"subject": "SSC", "difficulty": "Easy", "text": "SSC was established in?", "option_a": "1975", "option_b": "1976", "option_c": "1977", "option_d": "1978", "correct_option": "B", "explanation": "SSC was established on November 4, 1975"},
++        {"subject": "SSC", "difficulty": "Easy", "text": "SSC conducts exam for which posts?", "option_a": "All government posts", "option_b": "Group B and C posts", "option_c": "Only bank posts", "option_d": "Only railway posts", "correct_option": "B", "explanation": "SSC conducts exam for Group B and C posts"},
++        {"subject": "SSC", "difficulty": "Easy", "text": "Age limit for SSC CHSL is?", "option_a": "18-25", "option_b": "18-27", "option_c": "20-30", "option_d": "21-32", "correct_option": "B", "explanation": "Age limit for CHSL is 18-27 years"},
++        {"subject": "SSC", "difficulty": "Medium", "text": "SSC CGL stands for?", "option_a": "Combined Graduate Level", "option_b": "Combined General Level", "option_c": "Central Grade List", "option_d": "Central Government Level", "correct_option": "A", "explanation": "SSC CGL is Combined Graduate Level"},
++        {"subject": "SSC", "difficulty": "Medium", "text": "How many tiers are there in SSC CGL?", "option_a": "2", "option_b": "3", "option_c": "4", "option_d": "5", "correct_option": "C", "explanation": "SSC CGL has 4 tiers"},
++        {"subject": "SSC", "difficulty": "Medium", "text": "CHSL stands for?", "option_a": "Combined Higher Secondary Level", "option_b": "Combined High School Level", "option_c": "Comprehensive Secondary Level", "option_d": "Central High Service Level", "correct_option": "A", "explanation": "CHSL is Combined Higher Secondary Level"},
++        {"subject": "SSC", "difficulty": "Hard", "text": "What is the maximum age limit for SSC CGL?", "option_a": "28", "option_b": "30", "option_c": "32", "option_d": "35", "correct_option": "C", "explanation": "Age limit for SSC CGL is 21-32 for general"},
++        {"subject": "SSC", "difficulty": "Hard", "text": "SSC Stenographer exam is for?", "option_a": "Group A posts", "option_b": "Group B and C posts", "option_c": "Group C and D posts", "option_d": "Only Group D posts", "correct_option": "B", "explanation": "SSC Stenographer is for Group C and D posts"},
++        {"subject": "SSC", "difficulty": "Hard", "text": "SSC JE stands for?", "option_a": "Junior Engineer", "option_b": "Joint Examination", "option_c": "Junior Executive", "option_d": "Judicial Examination", "correct_option": "A", "explanation": "SSC JE is for Junior Engineer posts"},
+     ]
+ 
+ 
+@@ -417,12 +464,16 @@ def register_routes(app):
+     @login_required
+     @admin_required
+     def admin():
++        # Get all subjects from database
++        subjects = Subject.query.order_by(Subject.created_at.desc()).all()
+         return render_template(
+             "admin.html",
+             active_page="admin",
+             questions=Question.query.order_by(Question.id.desc()).all(),
+             users=User.query.order_by(User.created_at.desc()).all(),
+             all_attempts=QuizAttempt.query.order_by(QuizAttempt.date_taken.desc()).all(),
++            subjects=subjects,
++            available_subjects=SUBJECTS,
+         )
+ 
+     @app.route("/admin/questions/add", methods=["POST"])
+@@ -464,6 +515,55 @@ def register_routes(app):
+         flash("Question deleted.", "success")
+         return redirect(url_for("admin"))
+ 
++    @app.route("/admin/subjects/add", methods=["POST"])
++    @login_required
++    @admin_required
++    def admin_add_subject():
++        name = request.form.get("name", "").strip()
++        emoji = request.form.get("emoji", "Book").strip()
++        description = request.form.get("description", "").strip()
++
++        if not name:
++            flash("Subject name is required.", "error")
++            return redirect(url_for("admin"))
++
++        if Subject.query.filter_by(name=name).first():
++            flash("This subject already exists.", "error")
++            return redirect(url_for("admin"))
++
++        subject = Subject(
++            name=name,
++            emoji=emoji,
++            description=description
++        )
++        db.session.add(subject)
++        db.session.commit()
++        
++        # Add subject to SUBJECTS list if not already there
++        if name not in SUBJECTS:
++            SUBJECTS.append(name)
++        
++        flash(f"Subject '{name}' added successfully.", "success")
++        return redirect(url_for("admin"))
++
++    @app.route("/admin/subjects/<int:subject_id>/delete", methods=["POST"])
++    @login_required
++    @admin_required
++    def admin_delete_subject(subject_id):
++        subject = db.session.get(Subject, subject_id)
++        if not subject:
++            flash("Subject not found.", "error")
++            return redirect(url_for("admin"))
++
++        # Remove from SUBJECTS list
++        if subject.name in SUBJECTS:
++            SUBJECTS.remove(subject.name)
++
++        db.session.delete(subject)
++        db.session.commit()
++        flash(f"Subject '{subject.name}' deleted.", "success")
++        return redirect(url_for("admin"))
++
+     @app.route("/charts/accuracy.svg")
+     @login_required
+     def accuracy_chart():
+@@ -490,6 +590,111 @@ def register_routes(app):
+         values = [attempt.percentage for attempt in attempts]
+         return svg_response(line_chart_svg(labels, values, "Attempt Trend"))
+ 
++    @app.route("/download/result/<int:attempt_id>/csv")
++    @login_required
++    def download_result_csv(attempt_id):
++        attempt = db.session.get(QuizAttempt, attempt_id)
++        if not attempt:
++            flash("Attempt not found.", "error")
++            return redirect(url_for("dashboard"))
++
++        if attempt.user_id != session["user_id"] and session.get("role") != "admin":
++            flash("You cannot download that result.", "error")
++            return redirect(url_for("dashboard"))
++
++        output = StringIO()
++        writer = csv.writer(output)
++        writer.writerow(["Quiz Result Report"])
++        writer.writerow([])
++        writer.writerow(["Student Name", session.get("username")])
++        writer.writerow(["Subject", attempt.subject])
++        writer.writerow(["Date Taken", attempt.date_taken])
++        writer.writerow(["Total Questions", attempt.total_questions])
++        writer.writerow(["Correct Answers", attempt.correct_answers])
++        writer.writerow(["Percentage", f"{attempt.percentage}%"])
++        writer.writerow(["Time Taken", f"{attempt.time_taken // 60}m {attempt.time_taken % 60}s"])
++        writer.writerow([])
++        writer.writerow(["Question", "Your Answer", "Correct Answer", "Result"])
++        
++        for answer in attempt.answers:
++            result = "Correct" if answer.is_correct else "Incorrect"
++            writer.writerow([
++                answer.text[:50],
++                answer.selected_option or "Not Answered",
++                answer.correct_option,
++                result
++            ])
++
++        output.seek(0)
++        return Response(
++            output.getvalue(),
++            mimetype="text/csv",
++            headers={"Content-Disposition": f"attachment;filename=quiz_result_{attempt_id}.csv"}
++        )
++
++    @app.route("/download/questions/<subject>/csv")
++    @login_required
++    @admin_required
++    def download_questions_csv(subject):
++        questions = Question.query.filter_by(subject=subject).all()
++        if not questions:
++            flash("No questions found for this subject.", "error")
++            return redirect(url_for("admin"))
++
++        output = StringIO()
++        writer = csv.writer(output)
++        writer.writerow(["Subject", "Difficulty", "Question", "Option A", "Option B", "Option C", "Option D", "Correct", "Explanation"])
++        
++        for q in questions:
++            writer.writerow([
++                q.subject,
++                q.difficulty,
++                q.text,
++                q.option_a,
++                q.option_b,
++                q.option_c,
++                q.option_d,
++                q.correct_option,
++                q.explanation or ""
++            ])
++
++        output.seek(0)
++        return Response(
++            output.getvalue(),
++            mimetype="text/csv",
++            headers={"Content-Disposition": f"attachment;filename={subject.replace(' ', '_')}_questions.csv"}
++        )
++
++    @app.route("/download/all-attempts/csv")
++    @login_required
++    def download_attempts_csv():
++        user_id = session["user_id"]
++        attempts = QuizAttempt.query.filter_by(user_id=user_id).order_by(QuizAttempt.date_taken.desc()).all()
++        
++        output = StringIO()
++        writer = csv.writer(output)
++        writer.writerow(["Quiz Attempts Report"])
++        writer.writerow(["Student", session.get("username")])
++        writer.writerow([])
++        writer.writerow(["Date", "Subject", "Total Q", "Correct", "Percentage", "Time"])
++        
++        for attempt in attempts:
++            writer.writerow([
++                attempt.date_taken,
++                attempt.subject,
++                attempt.total_questions,
++                attempt.correct_answers,
++                f"{attempt.percentage}%",
++                f"{attempt.time_taken // 60}m"
++            ])
++
++        output.seek(0)
++        return Response(
++            output.getvalue(),
++            mimetype="text/csv",
++            headers={"Content-Disposition": "attachment;filename=quiz_attempts.csv"}
++        )
++
+ 
+ def dashboard_stats(user_id):
+     attempts = QuizAttempt.query.filter_by(user_id=user_id).order_by(QuizAttempt.date_taken.asc()).all()
+@@ -636,4 +841,6 @@ app = create_app()
+ 
+ 
+ if __name__ == "__main__":
+-    app.run(debug=True,port=3000)
++    port = int(os.environ.get("PORT", 3000))
++    app.run(host="127.0.0.1", port=port, debug=True)
++

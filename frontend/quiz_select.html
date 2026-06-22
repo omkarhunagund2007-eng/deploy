@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Select Mock Test - GovPrep Portal{% endblock %}
+{% block content %}
+<div class="dashboard-header">
+    <h1 class="page-title">Mock Test Selection Command Center</h1>
+    <p class="page-subtitle">Configure your study plan. Select a subject category or choose a comprehensive mixed exam.</p>
+</div>
+<form action="{{ url_for('quiz_start') }}" method="POST" id="testConfigForm">
+    <!-- SUBJECT SELECTION -->
+    <h3 style="margin-bottom: 1rem;">1. Choose Category</h3>
+    <div class="subject-card-grid">
+        <!-- Card 1: Quant -->
+        <label class="glass-card subject-selection-card" style="position: relative;">
+            <input type="radio" name="subject" value="Quantitative Aptitude" style="position: absolute; top: 1rem; right: 1rem; width: 18px; height: 18px; accent-color: var(--primary);" checked>
+            <div style="font-size: 2.25rem;">📊</div>
+            <div>
+                <h4 style="margin-bottom: 0.25rem; font-weight: 700;">Quantitative Aptitude</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                    Arithmetic, percentages, speeds, ratio analysis, and data interpretation.
+                </p>
+            </div>
+            <div class="subject-meta-items">
+                <span>📚 5 Questions Available</span>
+                <span class="diff-badge diff-Medium">Medium - Hard</span>
+            </div>
+        </label>
+        <!-- Card 2: Reasoning -->
+        <label class="glass-card subject-selection-card" style="position: relative;">
+            <input type="radio" name="subject" value="Reasoning" style="position: absolute; top: 1rem; right: 1rem; width: 18px; height: 18px; accent-color: var(--primary);">
+            <div style="font-size: 2.25rem;">🧠</div>
+            <div>
+                <h4 style="margin-bottom: 0.25rem; font-weight: 700;">Logical Reasoning</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                    Syllogisms, sequences, pattern completions, and directional logic arrays.
+                </p>
+            </div>
+            <div class="subject-meta-items">
+                <span>🧩 4 Questions Available</span>
+                <span class="diff-badge diff-Hard">Medium - Hard</span>
+            </div>
+        </label>
+        <!-- Card 3: English -->
+        <label class="glass-card subject-selection-card" style="position: relative;">
+            <input type="radio" name="subject" value="English" style="position: absolute; top: 1rem; right: 1rem; width: 18px; height: 18px; accent-color: var(--primary);">
+            <div style="font-size: 2.25rem;">📝</div>
+            <div>
+                <h4 style="margin-bottom: 0.25rem; font-weight: 700;">English Language</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                    Grammar structure corrections, preposition blanks, and vocabulary definitions.
+                </p>
+            </div>
+            <div class="subject-meta-items">
+                <span>📖 4 Questions Available</span>
+                <span class="diff-badge diff-Medium">Easy - Hard</span>
+            </div>
+        </label>
+        <!-- Card 4: GK -->
+        <label class="glass-card subject-selection-card" style="position: relative;">
+            <input type="radio" name="subject" value="General Knowledge" style="position: absolute; top: 1rem; right: 1rem; width: 18px; height: 18px; accent-color: var(--primary);">
+            <div style="font-size: 2.25rem;">🌍</div>
+            <div>
+                <h4 style="margin-bottom: 0.25rem; font-weight: 700;">General Knowledge</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                    Current affairs, history, planetary sciences, and central banking rules.
+                </p>
+            </div>
+            <div class="subject-meta-items">
+                <span>🏛️ 5 Questions Available</span>
+                <span class="diff-badge diff-Easy">Easy - Medium</span>
+            </div>
+        </label>
+        <!-- Card 5: Full Mock -->
+        <label class="glass-card subject-selection-card" style="position: relative;">
+            <input type="radio" name="subject" value="Full-Length Mock" style="position: absolute; top: 1rem; right: 1rem; width: 18px; height: 18px; accent-color: var(--primary);">
+            <div style="font-size: 2.25rem;">🏆</div>
+            <div>
+                <h4 style="margin-bottom: 0.25rem; font-weight: 700;">Full-Length Mock Test</h4>
+                <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                    A composite mock test combining all subject areas in balanced quantities.
+                </p>
+            </div>
+            <div class="subject-meta-items">
+                <span>✨ Mixed Questions</span>
+                <span class="diff-badge diff-Medium">Mixed Difficulty</span>
+            </div>
+        </label>
+    </div>
+    <!-- EXAM PARAMETERS CONFIG -->
+    <div class="glass-card" style="margin-top: 2rem;">
+        <h3 style="margin-bottom: 1.25rem;">2. Configure Examination Settings</h3>
+        
+        <div class="form-row">
+            <!-- Questions Count Selector -->
+            <div class="form-group">
+                <label for="num_questions">Number of Questions</label>
+                <select id="num_questions" name="num_questions" class="form-control" style="background-color: var(--bg-main);">
+                    <option value="5" selected>5 Questions (Quick Practice)</option>
+                    <option value="10">10 Questions (Standard Quiz)</option>
+                    <option value="15">15 Questions (Full-Length Set)</option>
+                </select>
+            </div>
+            
+            <!-- Timer Options -->
+            <div class="form-group">
+                <label for="duration">Timer Limit</label>
+                <select id="duration" name="duration" class="form-control" style="background-color: var(--bg-main);">
+                    <option value="2">2 Minutes (Speed Run)</option>
+                    <option value="5" selected>5 Minutes (Standard Pace)</option>
+                    <option value="10">10 Minutes (Focused Practice)</option>
+                    <option value="20">20 Minutes (Relaxed Timing)</option>
+                </select>
+            </div>
+        </div>
+        
+        <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end;">
+            <button type="submit" class="btn btn-primary" style="padding: 0.9rem 2rem;">
+                🚀 Start Secure Examination
+            </button>
+        </div>
+    </div>
+</form>
+<script>
+    // Style label selection visually when radio button triggers
+    const cards = document.querySelectorAll('.subject-selection-card');
+    cards.forEach(card => {
+        card.addEventListener('click', () => {
+            cards.forEach(c => c.style.borderColor = 'var(--border-color)');
+            const radio = card.querySelector('input[type="radio"]');
+            radio.checked = true;
+            card.style.borderColor = 'var(--primary)';
+        });
+    });
+</script>
+{% endblock %}

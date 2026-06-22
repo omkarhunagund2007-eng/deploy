@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - GovPrep Portal{% endblock %}
+{% block content %}
+<div class="dashboard-header">
+    <h1 class="page-title">Welcome Back, {{ session.get('username') }}!</h1>
+    <p class="page-subtitle">Here is a comprehensive analysis of your government competitive exam preparation.</p>
+</div>
+<!-- STATS SUMMARY GRID -->
+<div class="stats-grid">
+    <!-- Stat 1: Total Attempts -->
+    <div class="glass-card metric-card">
+        <div class="metric-icon-box primary">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+            </svg>
+        </div>
+        <div class="metric-details">
+            <span class="metric-value">{{ stats.total_attempts }}</span>
+            <span class="metric-label">Total Tests Taken</span>
+        </div>
+    </div>
+    
+    <!-- Stat 2: Avg Accuracy -->
+    <div class="glass-card metric-card">
+        <div class="metric-icon-box success">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"></path>
+            </svg>
+        </div>
+        <div class="metric-details">
+            <span class="metric-value">{{ stats.overall_accuracy }}%</span>
+            <span class="metric-label">Average Score Accuracy</span>
+        </div>
+    </div>
+    
+    <!-- Stat 3: Strongest Subject -->
+    <div class="glass-card metric-card">
+        <div class="metric-icon-box info">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+            </svg>
+        </div>
+        <div class="metric-details">
+            <span class="metric-value" style="font-size: 1.1rem; line-height: 1.3;">
+                {% if stats.has_data %}
+                    {{ stats.strongest_subject }}
+                {% else %}
+                    None
+                {% endif %}
+            </span>
+            <span class="metric-label">Strongest Area ({{ stats.strongest_score if stats.has_data else '0' }}%)</span>
+        </div>
+    </div>
+    
+    <!-- Stat 4: Weakest Subject -->
+    <div class="glass-card metric-card">
+        <div class="metric-icon-box warning">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+        </div>
+        <div class="metric-details">
+            <span class="metric-value" style="font-size: 1.1rem; line-height: 1.3;">
+                {% if stats.has_data %}
+                    {{ stats.weakest_subject }}
+                {% else %}
+                    None
+                {% endif %}
+            </span>
+            <span class="metric-label">Weakest Area ({{ stats.weakest_score if stats.has_data else '0' }}%)</span>
+        </div>
+    </div>
+</div>
+{% if stats.has_data %}
+    <!-- DYNAMIC PERFORMANCE GRAPHICS FROM MATPLOTLIB -->
+    <div class="analytics-grid">
+        <div class="glass-card chart-card">
+            <h3>Subject-wise Competency</h3>
+            <p class="page-subtitle">Accuracy comparison computed via Pandas aggregates</p>
+            <!-- Embed dynamically generated accuracy bar chart -->
+            <img src="{{ stats.accuracy_chart_url }}?t={{ cache_buster }}" class="chart-image" alt="Subject Accuracy Graph">
+        </div>
+        
+        <div class="glass-card chart-card">
+            <h3>Improvement Trajectory</h3>
+            <p class="page-subtitle">Chronological trend of percentage performance</p>
+            <!-- Embed dynamically generated trend line chart -->
+            <img src="{{ stats.trend_chart_url }}?t={{ cache_buster }}" class="chart-image" alt="Attempt Trend Graph">
+        </div>
+    </div>
+    <!-- PANDAS PERFORMANCE EVALUATION AND RECOMMENDATIONS -->
+    <div class="glass-card recommendation-box">
+        <h3>💡 Adaptive Learning Plan & Suggestions</h3>
+        <p class="page-subtitle">Automated recommendations based on database results and statistical thresholds:</p>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem;">
+            {% for tip in stats.weak_areas_tips %}
+                <div class="tip-item {% if loop.first and stats.weakest_score < 50 %}danger{% endif %}">
+                    <span style="font-size: 1.25rem;">{% if loop.first and stats.weakest_score < 50 %}⚠️{% else %}💡{% endif %}</span>
+                    <div>
+                        <p style="font-weight: 600; margin-bottom: 0.2rem;">
+                            {% if loop.first %}Critical Action Item{% else %}Revision Strategy Suggestion{% endif %}
+                        </p>
+                        <p style="font-size: 0.88rem; color: var(--text-main); line-height: 1.4;">{{ tip }}</p>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+{% else %}
+    <!-- EMPTY STATE FOR NEW STUDENTS -->
+    <div class="glass-card" style="text-align: center; padding: 4rem 2rem;">
+        <span style="font-size: 4rem;">📝</span>
+        <h2 style="margin-top: 1rem;">No Performance Data Yet</h2>
+        <p class="page-subtitle" style="max-width: 500px; margin: 0.5rem auto 1.5rem auto;">
+            You have not attempted any mock tests yet. Take a quick quiz in Aptitude, Reasoning, English, or General Knowledge to initialize your analytical dashboard and charts!
+        </p>
+        <a href="{{ url_for('quiz_select') }}" class="btn btn-primary">Take Your First Mock Test</a>
+    </div>
+{% endif %}
+<!-- MOCK TESTS HISTORY -->
+<div class="glass-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem;">
+        <div>
+            <h3>Recent Quiz Attempts</h3>
+            <p class="page-subtitle">Your latest exams stored securely in the database</p>
+        </div>
+        <a href="{{ url_for('quiz_select') }}" class="btn btn-secondary btn-sm" style="padding: 0.5rem 1rem; font-size: 0.85rem;">New Test</a>
+    </div>
+    
+    {% if attempts %}
+        <div class="table-responsive">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Subject / Mock Category</th>
+                        <th>Score</th>
+                        <th>Accuracy</th>
+                        <th>Time Spent</th>
+                        <th style="text-align: right;">Review Diagnostics</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for attempt in attempts %}
+                        <tr>
+                            <td>{{ attempt.date_taken }}</td>
+                            <td>
+                                <span class="subject-badge badge-{{ attempt.subject.split()[-1].lower() if 'Knowledge' not in attempt.subject else 'gk' }}">
+                                    {{ attempt.subject }}
+                                </span>
+                            </td>
+                            <td><strong>{{ attempt.correct_answers }}</strong> / {{ attempt.total_questions }}</td>
+                            <td>
+                                <span style="font-weight: 600; color: {% if attempt.percentage >= 70 %}var(--success){% elif attempt.percentage >= 45 %}var(--warning){% else %}var(--danger){% endif %};">
+                                    {{ attempt.percentage | round(1) }}%
+                                </span>
+                            </td>
+                            <td>{{ attempt.time_taken // 60 }}m {{ attempt.time_taken % 60 }}s</td>
+                            <td style="text-align: right;">
+                                <a href="{{ url_for('quiz_result', attempt_id=attempt.id) }}" class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; border-radius: 0.25rem;">
+                                    View Report
+                                </a>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <p style="text-align: center; color: var(--text-muted); padding: 2rem 0; font-size: 0.9rem;">
+            No attempts found in database. Complete a test above to record your scores.
+        </p>
+    {% endif %}
+</div>
+{% endblock %}

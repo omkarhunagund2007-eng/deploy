@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}Administrator Dashboard - GovPrep{% endblock %}
+{% block content %}
+<div class="dashboard-header">
+    <span class="subject-badge badge-gk" style="margin-bottom: 0.25rem;">ADMIN CONTROL TERMINAL</span>
+    <h1 class="page-title">Portal Administration</h1>
+    <p class="page-subtitle">Configure examination banks, register students, and inspect performance databases.</p>
+</div>
+<!-- Tab Navigation buttons -->
+<div class="admin-tab-container">
+    <button class="admin-tab active" id="tabBtnQuestions" onclick="switchTab('questions')">Question Bank CRUD Manager</button>
+    <button class="admin-tab" id="tabBtnStudents" onclick="switchTab('students')">Student Grade Ledger & Stats</button>
+    <button class="admin-tab" id="tabBtnSubjects" onclick="switchTab('subjects')">Subject Management</button>
+    <button class="admin-tab" id="tabBtnDownload" onclick="switchTab('download')">Download Data</button>
+</div>
+<!-- SECTION 1: QUESTION BANK MANAGER (CRUD) -->
+<div id="sectionQuestions" class="admin-section">
+    <div class="glass-card" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.25rem;">Bulk Upload via PDF</h3>
+        <form action="{{ url_for('admin_upload_questions_pdf') }}" method="POST" enctype="multipart/form-data">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="pdf_subject">Subject Category</label>
+                    <select id="pdf_subject" name="subject" class="form-control" style="background-color: var(--bg-main);" required>
+                        {% for subject in available_subjects %}
+                            <option value="{{ subject }}">{{ subject }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="pdf_difficulty">Difficulty Tier</label>
+                    <select id="pdf_difficulty" name="difficulty" class="form-control" style="background-color: var(--bg-main);" required>
+                        <option value="Easy">Easy</option>
+                        <option value="Medium" selected>Medium</option>
+                        <option value="Hard">Hard</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label for="pdf_file">Upload Question Bank PDF</label>
+                <input type="file" id="pdf_file" name="pdf_file" accept=".pdf" class="form-control" required style="padding: 0.5rem;">
+                <small style="color: var(--text-muted); display: block; margin-top: 0.5rem;">The PDF will be parsed line by line. Ensure each question and its options are formatted clearly.</small>
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+                <button type="submit" class="btn btn-secondary" style="border-color: var(--primary); color: var(--primary);">Upload & Parse PDF</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- ADD NEW QUESTION FORM -->
+    <div class="glass-card" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.25rem;">Seed New Question into Bank</h3>
+        
+        <form action="{{ url_for('admin_add_question') }}" method="POST">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="q_subject">Subject Category</label>
+                    <select id="q_subject" name="subject" class="form-control" style="background-color: var(--bg-main);" required>
+                        {% for subject in available_subjects %}
+                            <option value="{{ subject }}">{{ subject }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="q_difficulty">Difficulty Tier</label>
+                    <select id="q_difficulty" name="difficulty" class="form-control" style="background-color: var(--bg-main);" required>
+                        <option value="Easy">Easy</option>
+                        <option value="Medium" selected>Medium</option>
+                        <option value="Hard">Hard</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="q_correct">Correct Choice</label>
+                    <select id="q_correct" name="correct_option" class="form-control" style="background-color: var(--bg-main);" required>
+                        <option value="A">Option A</option>
+                        <option value="B">Option B</option>
+                        <option value="C">Option C</option>
+                        <option value="D">Option D</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label for="q_text">Question Stem Statement</label>
+                <textarea id="q_text" name="text" rows="3" class="form-control" placeholder="Type the exam question text here..." required></textarea>
+            </div>
+            <div class="form-row" style="margin-top: 1rem;">
+                <div class="form-group">
+                    <label for="q_opt_a">Option A</label>
+                    <input type="text" id="q_opt_a" name="option_a" class="form-control" placeholder="A option label" required>
+                </div>
+                <div class="form-group">
+                    <label for="q_opt_b">Option B</label>
+                    <input type="text" id="q_opt_b" name="option_b" class="form-control" placeholder="B option label" required>
+                </div>
+                <div class="form-group">
+                    <label for="q_opt_c">Option C</label>
+                    <input type="text" id="q_opt_c" name="option_c" class="form-control" placeholder="C option label" required>
+                </div>
+                <div class="form-group">
+                    <label for="q_opt_d">Option D</label>
+                    <input type="text" id="q_opt_d" name="option_d" class="form-control" placeholder="D option label" required>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label for="q_explanation">Detailed Solution Explanation</label>
+                <textarea id="q_explanation" name="explanation" rows="2" class="form-control" placeholder="Write step-by-step solutions..."></textarea>
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+                <button type="submit" class="btn btn-primary">Save Question to Database</button>
+            </div>
+        </form>
+    </div>
+    
+    <!-- QUESTION BANK LIST -->
+    <div class="glass-card">
+        <h3 style="margin-bottom: 1.25rem;">Current Question Bank ({{ questions | length }} Total)</h3>
+        {% if questions %}
+            <div class="table-responsive">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 80px;">ID</th>
+                            <th>Subject</th>
+                            <th>Question Summary</th>
+                            <th style="width: 100px;">Difficulty</th>
+                            <th style="width: 80px;">Correct</th>
+                            <th style="text-align: right; width: 120px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for q in questions %}
+                            <tr>
+                                <td>#{{ q.id }}</td>
+                                <td><span class="subject-badge">{{ q.subject }}</span></td>
+                                <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ q.text }}</td>
+                                <td><span class="diff-badge diff-{{ q.difficulty }}">{{ q.difficulty }}</span></td>
+                                <td><strong>{{ q.correct_option }}</strong></td>
+                                <td style="text-align: right;">
+                                    <form action="{{ url_for('admin_delete_question', question_id=q.id) }}" method="POST" style="display: inline;" onsubmit="return confirm('Confirm delete?');">
+                                        <button type="submit" class="btn btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.75rem; border-color: rgba(239, 68, 68, 0.4); color: var(--danger); background: none;">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p style="text-align: center; color: var(--text-muted); padding: 2rem 0;">No questions exist yet!</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- SECTION 2: STUDENT ANALYTICS & GRADE LEDGER -->
+<div id="sectionStudents" class="admin-section" style="display: none;">
+    <!-- ALL REGISTERED USERS -->
+    <div class="glass-card" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.25rem;">Registered Portal Users</h3>
+        <div class="table-responsive">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>User ID</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>User Role</th>
+                        <th>Created Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                        <tr>
+                            <td>#{{ u.id }}</td>
+                            <td><strong>{{ u.username }}</strong></td>
+                            <td>{{ u.email }}</td>
+                            <td><span class="subject-badge">{{ u.role }}</span></td>
+                            <td>{{ u.created_at }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <!-- STUDENT QUIZ GRADE SHEET -->
+    <div class="glass-card">
+        <h3 style="margin-bottom: 1.25rem;">Complete Student Quiz Attempts</h3>
+        {% if all_attempts %}
+            <div class="table-responsive">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Student</th>
+                            <th>Attempt Date</th>
+                            <th>Subject Category</th>
+                            <th>Raw Marks</th>
+                            <th>Accuracy</th>
+                            <th>Time Spent</th>
+                            <th style="text-align: right;">Review</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for att in all_attempts %}
+                            <tr>
+                                <td><strong>{{ att.username }}</strong></td>
+                                <td>{{ att.date_taken }}</td>
+                                <td><span class="subject-badge">{{ att.subject }}</span></td>
+                                <td>{{ att.correct_answers }} / {{ att.total_questions }}</td>
+                                <td><span style="font-weight: 600; color: {% if att.percentage >= 70 %}var(--success){% elif att.percentage >= 45 %}var(--warning){% else %}var(--danger){% endif %};">{{ att.percentage | round(1) }}%</span></td>
+                                <td>{{ att.time_taken // 60 }}m {{ att.time_taken % 60 }}s</td>
+                                <td style="text-align: right;"><a href="{{ url_for('quiz_result', attempt_id=att.id) }}" class="btn btn-secondary" target="_blank" style="padding: 0.35rem 0.7rem; font-size: 0.75rem;">Report View</a></td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p style="text-align: center; color: var(--text-muted); padding: 2rem 0;">No attempts recorded yet.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- SECTION 3: SUBJECT MANAGEMENT -->
+<div id="sectionSubjects" class="admin-section" style="display: none;">
+    <!-- ADD NEW SUBJECT FORM -->
+    <div class="glass-card" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.25rem;">Create New Exam Subject</h3>
+        
+        <form action="{{ url_for('admin_add_subject') }}" method="POST">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="s_name">Subject Name</label>
+                    <input type="text" id="s_name" name="name" class="form-control" placeholder="e.g., CAT Exam, GMAT, NEET" required>
+                </div>
+                <div class="form-group">
+                    <label for="s_emoji">Subject Icon Text</label>
+                    <input type="text" id="s_emoji" name="emoji" class="form-control" placeholder="e.g., Book" value="Book" maxlength="12" required>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label for="s_description">Subject Description</label>
+                <textarea id="s_description" name="description" rows="2" class="form-control" placeholder="Brief description of the exam..."></textarea>
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+                <button type="submit" class="btn btn-primary">Add New Subject</button>
+            </div>
+        </form>
+    </div>
+    
+    <!-- EXISTING SUBJECTS LIST -->
+    <div class="glass-card">
+        <h3 style="margin-bottom: 1.25rem;">Available Subjects ({{ subjects | length }})</h3>
+        {% if subjects %}
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                {% for subject in subjects %}
+                    <div style="background: var(--bg-main); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-color); position: relative;">
+                        <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">{{ subject.emoji }}</div>
+                        <h4 style="margin: 0.5rem 0;">{{ subject.name }}</h4>
+                        <p style="font-size: 0.9rem; color: var(--text-muted); margin: 0.5rem 0 1rem 0;">{{ subject.description or 'No description' }}</p>
+                        <form action="{{ url_for('admin_delete_subject', subject_id=subject.id) }}" method="POST" style="display: inline;" onsubmit="return confirm('Delete this subject?');">
+                            <button type="submit" class="btn btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.75rem; border-color: rgba(239, 68, 68, 0.4); color: var(--danger); background: none; width: 100%;">Delete Subject</button>
+                        </form>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <p style="text-align: center; color: var(--text-muted); padding: 2rem 0;">No custom subjects created yet. Click "Add New Subject" to create one.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- SECTION 4: DOWNLOAD DATA -->
+<div id="sectionDownload" class="admin-section" style="display: none;">
+    <div class="glass-card">
+        <h3 style="margin-bottom: 1.25rem;">Download Question Banks</h3>
+        <p style="color: var(--text-muted); margin-bottom: 1.5rem;">Export question banks as CSV files. Select a subject to download all its questions:</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+            {% for subject in available_subjects %}
+                <form action="{{ url_for('download_questions_pdf', subject=subject) }}" method="GET">
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">Download {{ subject }}</button>
+                </form>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<script>
+    function switchTab(tabName) {
+        document.getElementById('sectionQuestions').style.display = 'none';
+        document.getElementById('sectionStudents').style.display = 'none';
+        document.getElementById('sectionSubjects').style.display = 'none';
+        document.getElementById('sectionDownload').style.display = 'none';
+        
+        document.getElementById('tabBtnQuestions').classList.remove('active');
+        document.getElementById('tabBtnStudents').classList.remove('active');
+        document.getElementById('tabBtnSubjects').classList.remove('active');
+        document.getElementById('tabBtnDownload').classList.remove('active');
+        
+        if (tabName === 'questions') {
+            document.getElementById('sectionQuestions').style.display = 'block';
+            document.getElementById('tabBtnQuestions').classList.add('active');
+        } else if (tabName === 'students') {
+            document.getElementById('sectionStudents').style.display = 'block';
+            document.getElementById('tabBtnStudents').classList.add('active');
+        } else if (tabName === 'subjects') {
+            document.getElementById('sectionSubjects').style.display = 'block';
+            document.getElementById('tabBtnSubjects').classList.add('active');
+        } else if (tabName === 'download') {
+            document.getElementById('sectionDownload').style.display = 'block';
+            document.getElementById('tabBtnDownload').classList.add('active');
+        }
+    }
+</script>
+{% endblock %}

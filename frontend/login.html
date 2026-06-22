@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login & Register - GovPrep Portal</title>
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-wrapper">
+    <div class="auth-card glass-card" id="loginCard">
+        <div class="auth-header">
+            <h2 class="page-title">Welcome Back</h2>
+            <p class="page-subtitle">Sign in to resume mock tests & view performance stats</p>
+        </div>
+        
+        <!-- Alerts inside Auth Cards -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert-banner {{ category }}" style="margin-bottom: 1.5rem;">
+                        <span>{% if category == 'error' %}❌{% else %}✨{% endif %}</span>
+                        <span style="font-size: 0.85rem;">{{ message }}</span>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        <!-- LOGIN FORM -->
+        <form action="{{ url_for('login') }}" method="POST" id="loginForm">
+            <div class="form-group">
+                <label for="login_username">Username</label>
+                <input type="text" id="login_username" name="username" class="form-control" placeholder="Enter your username" required autocomplete="username">
+            </div>
+            
+            <div class="form-group">
+                <label for="login_password">Password</label>
+                <input type="password" id="login_password" name="password" class="form-control" placeholder="••••••••" required autocomplete="current-password">
+            </div>
+            
+            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1rem; padding: 0.85rem;">Sign In</button>
+        </form>
+        
+        <div class="auth-toggle-link">
+            Don't have an account? <a href="#" id="showRegisterBtn">Register Here</a>
+        </div>
+    </div>
+    <!-- REGISTRATION CARD (HIDDEN BY DEFAULT) -->
+    <div class="auth-card glass-card" id="registerCard" style="display: none;">
+        <div class="auth-header">
+            <h2 class="page-title">Create Account</h2>
+            <p class="page-subtitle">Get started with competitive exam preparation</p>
+        </div>
+        
+        <form action="{{ url_for('register') }}" method="POST" id="registerForm">
+            <div class="form-group">
+                <label for="reg_username">Username</label>
+                <input type="text" id="reg_username" name="username" class="form-control" placeholder="Choose a username" required autocomplete="username">
+            </div>
+            
+            <div class="form-group">
+                <label for="reg_email">Email Address</label>
+                <input type="email" id="reg_email" name="email" class="form-control" placeholder="you@example.com" required autocomplete="email">
+            </div>
+            
+            <div class="form-group">
+                <label for="reg_password">Password</label>
+                <input type="password" id="reg_password" name="password" class="form-control" placeholder="Minimum 6 characters" required autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label for="reg_role">Register As</label>
+                <select id="reg_role" name="role" class="form-control" style="background-color: var(--bg-main);" required>
+                    <option value="student" selected>Student (Take Quizzes & View Analytics)</option>
+                    <option value="admin">Administrator (Manage Questions & Student Scores)</option>
+                </select>
+            </div>
+            
+            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1rem; padding: 0.85rem;">Create Account</button>
+        </form>
+        
+        <div class="auth-toggle-link">
+            Already have an account? <a href="#" id="showLoginBtn">Sign In Here</a>
+        </div>
+    </div>
+    <script>
+        const loginCard = document.getElementById('loginCard');
+        const registerCard = document.getElementById('registerCard');
+        const showRegisterBtn = document.getElementById('showRegisterBtn');
+        const showLoginBtn = document.getElementById('showLoginBtn');
+        showRegisterBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            loginCard.style.display = 'none';
+            registerCard.style.display = 'block';
+        });
+        showLoginBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            registerCard.style.display = 'none';
+            loginCard.style.display = 'block';
+        });
+    </script>
+</body>
+</html>
