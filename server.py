@@ -103,10 +103,29 @@ def create_app():
     app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
     # MongoDB indexes & seed data (runs once per cold start)
-    ensure_indexes()
-    seed_database()
+    try:
+        ensure_indexes()
+        seed_database()
+        app.config["DATABASE_STARTUP_ERROR"] = None
+    except Exception as exc:
+        app.config["DATABASE_STARTUP_ERROR"] = exc
+        app.logger.exception("Database startup failed")
 
     register_routes(app)
+
+    @app.before_request
+    def require_database():
+        error = app.config.get("DATABASE_STARTUP_ERROR")
+        if error and request.path != "/healthz":
+            return Response(f"Database startup failed: {error}", status=503, mimetype="text/plain")
+
+    @app.route("/healthz")
+    def healthz():
+        error = app.config.get("DATABASE_STARTUP_ERROR")
+        if error:
+            return Response(f"database_error: {error}", status=503, mimetype="text/plain")
+        return Response("ok", mimetype="text/plain")
+
     return app
 
 

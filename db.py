@@ -14,18 +14,35 @@ load_dotenv()
 # Connection
 # ---------------------------------------------------------------------------
 mongo_uri = os.environ.get("MONGODB_URI") or os.environ.get("URL")
-if not mongo_uri:
-    raise RuntimeError("Set MONGODB_URI or URL to your MongoDB connection string.")
+_client = None
+_db = None
+_startup_error = None
 
-_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
-_db = _client[os.environ.get("DB_NAME", "quiz")]
+if mongo_uri:
+    _client = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
+    _db = _client[os.environ.get("DB_NAME", "quiz")]
+else:
+    _startup_error = RuntimeError("Set MONGODB_URI or URL to your MongoDB connection string.")
+
+
+class LazyCollection:
+    def __init__(self, name):
+        self.name = name
+
+    def _collection(self):
+        if _db is None:
+            raise _startup_error or RuntimeError("MongoDB is not configured.")
+        return getattr(_db, self.name)
+
+    def __getattr__(self, attr):
+        return getattr(self._collection(), attr)
 
 # Collection references
-subjects_col = _db.subjects
-users_col = _db.users
-questions_col = _db.questions
-attempts_col = _db.quiz_attempts
-answers_col = _db.attempt_answers
+subjects_col = LazyCollection("subjects")
+users_col = LazyCollection("users")
+questions_col = LazyCollection("questions")
+attempts_col = LazyCollection("quiz_attempts")
+answers_col = LazyCollection("attempt_answers")
 
 
 # ---------------------------------------------------------------------------
