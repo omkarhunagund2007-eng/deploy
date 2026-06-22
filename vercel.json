@@ -3,11 +3,11 @@
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/server.py"
+      "destination": "/api/index"
     }
   ],
   "functions": {
-    "server.py": {
+    "api/index.py": {
       "excludeFiles": "{scratch/**,frontend/**,instance/**,venv/**,.env,__pycache__/**,**/__pycache__/**,**/*.pyc}"
     }
   }
