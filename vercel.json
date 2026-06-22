@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/server.py"
+    }
+  ],
+  "functions": {
+    "server.py": {
+      "excludeFiles": "{scratch/**,frontend/**,instance/**,venv/**,.env,__pycache__/**,**/__pycache__/**,**/*.pyc}"
+    }
+  }
+}

@@ -3,13 +3,15 @@ import json
 import os
 import random
 from collections import defaultdict
+from datetime import datetime, timezone
 from functools import wraps
+from io import BytesIO, StringIO
 from time import time
+
 import csv
-from io import StringIO, BytesIO
-from datetime import datetime
-from fpdf import FPDF
 import PyPDF2
+from bson import ObjectId
+from fpdf import FPDF
 from flask import (
     Flask,
     Response,
@@ -22,7 +24,17 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from schema import AttemptAnswer, Question, QuizAttempt, User, Subject, db
+from db import (
+    answers_col,
+    attempts_col,
+    ensure_indexes,
+    questions_col,
+    subjects_col,
+    to_doc,
+    to_docs,
+    users_col,
+    Doc,
+)
 
 
 SUBJECTS = [
@@ -42,66 +54,65 @@ SUBJECTS = [
 SUBJECT_DEFAULTS = {
     "Quantitative Aptitude": {
         "emoji": "QA",
-        "description": "Arithmetic, percentages, speeds, ratio analysis, and data interpretation."
+        "description": "Arithmetic, percentages, speeds, ratio analysis, and data interpretation.",
     },
     "Reasoning": {
         "emoji": "LR",
-        "description": "Syllogisms, sequences, pattern completions, and directional logic arrays."
+        "description": "Syllogisms, sequences, pattern completions, and directional logic arrays.",
     },
     "English": {
         "emoji": "EN",
-        "description": "Grammar structure corrections, preposition blanks, and vocabulary definitions."
+        "description": "Grammar structure corrections, preposition blanks, and vocabulary definitions.",
     },
     "General Knowledge": {
         "emoji": "GK",
-        "description": "Current affairs, history, planetary sciences, and central banking rules."
+        "description": "Current affairs, history, planetary sciences, and central banking rules.",
     },
     "SBI-PO": {
         "emoji": "SB",
-        "description": "State Bank Probationary Officer specific questions and patterns."
+        "description": "State Bank Probationary Officer specific questions and patterns.",
     },
     "UPSC": {
         "emoji": "UP",
-        "description": "Union Public Service Commission Civil Services Examination preparation."
+        "description": "Union Public Service Commission Civil Services Examination preparation.",
     },
     "Railway": {
         "emoji": "RW",
-        "description": "Indian Railway recruitment board examination preparation."
+        "description": "Indian Railway recruitment board examination preparation.",
     },
     "Banking": {
         "emoji": "BK",
-        "description": "Banking fundamentals, RBI regulations, and financial concepts."
+        "description": "Banking fundamentals, RBI regulations, and financial concepts.",
     },
     "Insurance": {
         "emoji": "IN",
-        "description": "Insurance principles, LIC exams, and coverage fundamentals."
+        "description": "Insurance principles, LIC exams, and coverage fundamentals.",
     },
     "SSC": {
         "emoji": "SS",
-        "description": "Staff Selection Commission CGL, CHSL, JE, and other exams."
-    }
+        "description": "Staff Selection Commission CGL, CHSL, JE, and other exams.",
+    },
 }
 
 
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
-        "DATABASE_URL", "sqlite:///govprep.db"
-    )
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-    db.init_app(app)
-
-    with app.app_context():
-        db.create_all()
-        ensure_database_schema()
-        seed_database()
+    # MongoDB indexes & seed data (runs once per cold start)
+    ensure_indexes()
+    seed_database()
 
     register_routes(app)
     return app
 
 
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -127,75 +138,76 @@ def admin_required(view):
 
 def current_user():
     user_id = session.get("user_id")
-    return db.session.get(User, user_id) if user_id else None
+    if not user_id:
+        return None
+    try:
+        doc = users_col.find_one({"_id": ObjectId(user_id)})
+        return to_doc(doc)
+    except Exception:
+        return None
 
 
+# ---------------------------------------------------------------------------
+# Database seeding
+# ---------------------------------------------------------------------------
 def seed_database():
-    if not User.query.filter_by(username="admin").first():
-        db.session.add(
-            User(
-                username="admin",
-                email="admin@govprep.local",
-                password_hash=generate_password_hash("admin123"),
-                role="admin",
-            )
+    # Create default admin
+    if not users_col.find_one({"username": "admin"}):
+        users_col.insert_one(
+            {
+                "username": "admin",
+                "email": "admin@govprep.local",
+                "password_hash": generate_password_hash("admin123"),
+                "role": "admin",
+                "created_at": datetime.now(timezone.utc),
+            }
         )
 
-    if Question.query.count() == 0:
-        db.session.add_all(Question(**item) for item in seed_questions())
+    # Seed questions if collection is empty
+    if questions_col.count_documents({}) == 0:
+        items = seed_questions()
+        now = datetime.now(timezone.utc)
+        for item in items:
+            item["created_at"] = now
+        questions_col.insert_many(items)
 
     sync_subject_catalog()
-    db.session.commit()
-
-
-def ensure_database_schema():
-    """Add lightweight SQLite columns that db.create_all() cannot migrate."""
-    if db.engine.dialect.name != "sqlite":
-        return
-
-    subject_columns = {
-        row[1] for row in db.session.execute(db.text("PRAGMA table_info(subjects)"))
-    }
-    migrations = {
-        "emoji": "ALTER TABLE subjects ADD COLUMN emoji VARCHAR(20) NOT NULL DEFAULT 'Book'",
-        "description": "ALTER TABLE subjects ADD COLUMN description TEXT",
-        "difficulty_range": "ALTER TABLE subjects ADD COLUMN difficulty_range VARCHAR(50) DEFAULT 'Mixed'",
-        "created_at": "ALTER TABLE subjects ADD COLUMN created_at DATETIME",
-    }
-
-    for column, statement in migrations.items():
-        if column not in subject_columns:
-            db.session.execute(db.text(statement))
 
 
 def sync_subject_catalog():
-    # Update/seed default subjects with nice emojis and descriptions
+    """Ensure every default subject exists with nice metadata."""
     for name, defaults in SUBJECT_DEFAULTS.items():
-        subject = Subject.query.filter_by(name=name).first()
-        if subject:
-            # Upgrade from default "Book" values to nicer ones if applicable
-            if subject.emoji == "Book" or subject.description == f"Practice questions for {name}.":
-                subject.emoji = defaults["emoji"]
-                subject.description = defaults["description"]
-        else:
-            db.session.add(
-                Subject(
-                    name=name,
-                    emoji=defaults["emoji"],
-                    description=defaults["description"]
+        existing = subjects_col.find_one({"name": name})
+        if existing:
+            if existing.get("emoji") == "Book" or existing.get("description") == f"Practice questions for {name}.":
+                subjects_col.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {"emoji": defaults["emoji"], "description": defaults["description"]}},
                 )
+        else:
+            subjects_col.insert_one(
+                {
+                    "name": name,
+                    "emoji": defaults["emoji"],
+                    "description": defaults["description"],
+                    "difficulty_range": "Mixed",
+                    "created_at": datetime.now(timezone.utc),
+                }
             )
 
-    # Make sure SUBJECTS list in memory has all subjects from database
-    for subject in Subject.query.all():
-        if subject.name not in SUBJECTS:
-            SUBJECTS.append(subject.name)
+    # Keep the in-memory list in sync with the database
+    for subject in subjects_col.find():
+        if subject["name"] not in SUBJECTS:
+            SUBJECTS.append(subject["name"])
 
 
+# ---------------------------------------------------------------------------
+# Seed question data
+# ---------------------------------------------------------------------------
 def seed_questions():
     # This generates 100+ realistic questions for each subject
     return [
-        # QUANTITATIVE APTITUDE (100+ questions)
+        # QUANTITATIVE APTITUDE
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "If 20% of a number is 46, what is the number?", "option_a": "184", "option_b": "210", "option_c": "230", "option_d": "250", "correct_option": "C", "explanation": "20% is one fifth, so the number is 46 x 5 = 230."},
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "What is 15% of 240?", "option_a": "30", "option_b": "35", "option_c": "36", "option_d": "40", "correct_option": "C", "explanation": "15% of 240 = (15/100) × 240 = 36"},
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "If a number is 40% more than 50, what is it?", "option_a": "60", "option_b": "65", "option_c": "70", "option_d": "75", "correct_option": "C", "explanation": "40% of 50 = 20, so 50 + 20 = 70"},
@@ -207,15 +219,13 @@ def seed_questions():
         {"subject": "Quantitative Aptitude", "difficulty": "Medium", "text": "If the cost price is Rs. 200 and profit is 25%, what is the selling price?", "option_a": "Rs. 225", "option_b": "Rs. 250", "option_c": "Rs. 275", "option_d": "Rs. 300", "correct_option": "B", "explanation": "SP = CP + Profit = 200 + (25% of 200) = 200 + 50 = 250"},
         {"subject": "Quantitative Aptitude", "difficulty": "Hard", "text": "A person buys a watch for Rs. 5000 and sells it at a loss of 20%. What is the selling price?", "option_a": "Rs. 4000", "option_b": "Rs. 4500", "option_c": "Rs. 3500", "option_d": "Rs. 3000", "correct_option": "A", "explanation": "Loss = 20% of 5000 = 1000. SP = 5000 - 1000 = 4000"},
         {"subject": "Quantitative Aptitude", "difficulty": "Hard", "text": "A sum of money becomes 4 times in 3 years at compound interest. What is the rate?", "option_a": "25%", "option_b": "33.33%", "option_c": "50%", "option_d": "66.67%", "correct_option": "D", "explanation": "Using compound interest formula where A = 4P"},
-        
-        # Adding more Quantitative Aptitude questions (20+ more for completeness)
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "Average of 5, 10, 15, 20, 25 is?", "option_a": "15", "option_b": "20", "option_c": "25", "option_d": "30", "correct_option": "A", "explanation": "Sum = 75, Average = 75/5 = 15"},
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "What is 5² + 3²?", "option_a": "16", "option_b": "25", "option_c": "34", "option_d": "36", "correct_option": "C", "explanation": "5² = 25, 3² = 9, so 25 + 9 = 34"},
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "If 10 men can do work in 12 days, how many days for 15 men?", "option_a": "6", "option_b": "8", "option_c": "10", "option_d": "12", "correct_option": "B", "explanation": "Work ∝ Men × Days. So 10 × 12 = 15 × D. D = 8"},
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "The LCM of 12 and 18 is?", "option_a": "24", "option_b": "30", "option_c": "36", "option_d": "48", "correct_option": "C", "explanation": "LCM of 12 and 18 is 36"},
         {"subject": "Quantitative Aptitude", "difficulty": "Easy", "text": "The GCD of 24 and 36 is?", "option_a": "6", "option_b": "8", "option_c": "10", "option_d": "12", "correct_option": "D", "explanation": "GCD of 24 and 36 is 12"},
-        
-        # REASONING (100+ questions)
+
+        # REASONING
         {"subject": "Reasoning", "difficulty": "Easy", "text": "Find the next number: 2, 4, 8, 16, ?", "option_a": "20", "option_b": "24", "option_c": "30", "option_d": "32", "correct_option": "D", "explanation": "Each term is doubled"},
         {"subject": "Reasoning", "difficulty": "Easy", "text": "Find the missing: 1, 1, 2, 3, 5, 8, ?", "option_a": "10", "option_b": "12", "option_c": "13", "option_d": "15", "correct_option": "C", "explanation": "Fibonacci series: each term is sum of previous two"},
         {"subject": "Reasoning", "difficulty": "Easy", "text": "Find next: 5, 10, 20, 40, ?", "option_a": "50", "option_b": "60", "option_c": "80", "option_d": "100", "correct_option": "C", "explanation": "Each term is doubled"},
@@ -226,8 +236,8 @@ def seed_questions():
         {"subject": "Reasoning", "difficulty": "Hard", "text": "A is taller than B. C is taller than A. Who is the tallest?", "option_a": "A", "option_b": "B", "option_c": "C", "option_d": "Cannot determine", "correct_option": "C", "explanation": "C > A > B, so C is tallest"},
         {"subject": "Reasoning", "difficulty": "Hard", "text": "Find the odd one: Clock, Watch, Timer, Calendar", "option_a": "Clock", "option_b": "Watch", "option_c": "Timer", "option_d": "Calendar", "correct_option": "D", "explanation": "Calendar measures long periods; others measure short time"},
         {"subject": "Reasoning", "difficulty": "Hard", "text": "If north is up, then west is?", "option_a": "Left", "option_b": "Right", "option_c": "Down", "option_d": "Diagonal", "correct_option": "A", "explanation": "If north is up, west is to the left"},
-        
-        # ENGLISH (100+ questions)
+
+        # ENGLISH
         {"subject": "English", "difficulty": "Easy", "text": "Choose the correctly spelled word.", "option_a": "Accomodate", "option_b": "Acommodate", "option_c": "Accommodate", "option_d": "Acomodate", "correct_option": "C", "explanation": "The correct spelling is accommodate"},
         {"subject": "English", "difficulty": "Easy", "text": "Choose the correct spelling.", "option_a": "Necessary", "option_b": "Neccessary", "option_c": "Neccessery", "option_d": "Necesary", "correct_option": "A", "explanation": "Correct spelling is necessary"},
         {"subject": "English", "difficulty": "Easy", "text": "The synonym of 'Happy' is?", "option_a": "Sad", "option_b": "Joyful", "option_c": "Angry", "option_d": "Tired", "correct_option": "B", "explanation": "Joyful means happy"},
@@ -238,8 +248,8 @@ def seed_questions():
         {"subject": "English", "difficulty": "Hard", "text": "Choose the correct sentence.", "option_a": "She don't like coffee", "option_b": "She doesn't like coffee", "option_c": "She not like coffee", "option_d": "She not likes coffee", "correct_option": "B", "explanation": "Correct form is 'doesn't like'"},
         {"subject": "English", "difficulty": "Hard", "text": "Which is grammatically correct?", "option_a": "He have gone", "option_b": "He has went", "option_c": "He has gone", "option_d": "He having gone", "correct_option": "C", "explanation": "'has gone' is correct"},
         {"subject": "English", "difficulty": "Hard", "text": "Identify the error: 'The teacher along with students are here'", "option_a": "along with", "option_b": "are here", "option_c": "The teacher", "option_d": "No error", "correct_option": "B", "explanation": "Should be 'is here' (singular)"},
-        
-        # GENERAL KNOWLEDGE (100+ questions)
+
+        # GENERAL KNOWLEDGE
         {"subject": "General Knowledge", "difficulty": "Easy", "text": "Who is known as the Father of the Indian Constitution?", "option_a": "Gandhi", "option_b": "B. R. Ambedkar", "option_c": "Nehru", "option_d": "Patel", "correct_option": "B", "explanation": "Dr. B. R. Ambedkar chaired the drafting committee"},
         {"subject": "General Knowledge", "difficulty": "Easy", "text": "Which planet is known as the Red Planet?", "option_a": "Venus", "option_b": "Mars", "option_c": "Jupiter", "option_d": "Saturn", "correct_option": "B", "explanation": "Mars is red due to iron oxide"},
         {"subject": "General Knowledge", "difficulty": "Easy", "text": "The Reserve Bank of India was established in?", "option_a": "1935", "option_b": "1947", "option_c": "1950", "option_d": "1969", "correct_option": "A", "explanation": "RBI began operations on April 1, 1935"},
@@ -250,8 +260,8 @@ def seed_questions():
         {"subject": "General Knowledge", "difficulty": "Medium", "text": "The first Prime Minister of India was?", "option_a": "Sardar Patel", "option_b": "Jawaharlal Nehru", "option_c": "B. R. Ambedkar", "option_d": "Abul Kalam Azad", "correct_option": "B", "explanation": "Jawaharlal Nehru was the first PM"},
         {"subject": "General Knowledge", "difficulty": "Hard", "text": "Who was the first President of India?", "option_a": "Rajendra Prasad", "option_b": "S. Radhakrishnan", "option_c": "Zakir Husain", "option_d": "Giani Zail Singh", "correct_option": "A", "explanation": "Dr. Rajendra Prasad was the first President"},
         {"subject": "General Knowledge", "difficulty": "Hard", "text": "Which is the largest democracy in the world?", "option_a": "USA", "option_b": "India", "option_c": "Brazil", "option_d": "Indonesia", "correct_option": "B", "explanation": "India is the largest democracy by population"},
-        
-        # SBI-PO (100+ questions)
+
+        # SBI-PO
         {"subject": "SBI-PO", "difficulty": "Easy", "text": "What is the full form of SBI?", "option_a": "State Bank of India", "option_b": "Secure Banking Institution", "option_c": "Standard Bank International", "option_d": "State Business India", "correct_option": "A", "explanation": "SBI stands for State Bank of India"},
         {"subject": "SBI-PO", "difficulty": "Easy", "text": "In which year was SBI established?", "option_a": "1935", "option_b": "1950", "option_c": "1955", "option_d": "1960", "correct_option": "A", "explanation": "SBI was established in 1935"},
         {"subject": "SBI-PO", "difficulty": "Easy", "text": "What is the current SBI Governor?", "option_a": "Shaktikanta Das", "option_b": "Sanjay Malhotra", "option_c": "Viral Acharya", "option_d": "Michael Patra", "correct_option": "B", "explanation": "Sanjay Malhotra is the current RBI Governor"},
@@ -262,8 +272,8 @@ def seed_questions():
         {"subject": "SBI-PO", "difficulty": "Hard", "text": "What is the maximum marks for SBI PO Mains?", "option_a": "600", "option_b": "800", "option_c": "1000", "option_d": "900", "correct_option": "D", "explanation": "Mains exam is for 900 marks"},
         {"subject": "SBI-PO", "difficulty": "Hard", "text": "Duration of SBI PO Mains exam is?", "option_a": "2 hours", "option_b": "3 hours", "option_c": "4 hours", "option_d": "5 hours", "correct_option": "B", "explanation": "Mains exam duration is 3 hours"},
         {"subject": "SBI-PO", "difficulty": "Hard", "text": "How many vacancies are usually advertised in SBI PO?", "option_a": "500-1000", "option_b": "1000-2000", "option_c": "2000-4000", "option_d": "4000-6000", "correct_option": "C", "explanation": "Usually 2000-4000 vacancies"},
-        
-        # UPSC (100+ questions)
+
+        # UPSC
         {"subject": "UPSC", "difficulty": "Easy", "text": "What does UPSC stand for?", "option_a": "Union Public Service Commission", "option_b": "United Public Service Commission", "option_c": "Universal Public Service Commission", "option_d": "Union Professional Service Commission", "correct_option": "A", "explanation": "UPSC is Union Public Service Commission"},
         {"subject": "UPSC", "difficulty": "Easy", "text": "UPSC conducts exam for which services?", "option_a": "IAS only", "option_b": "IPS only", "option_c": "IAS, IPS, IFS", "option_d": "All services", "correct_option": "C", "explanation": "UPSC conducts exam for IAS, IPS, IFS etc."},
         {"subject": "UPSC", "difficulty": "Easy", "text": "How many attempts are allowed in UPSC Civil Services exam?", "option_a": "3", "option_b": "4", "option_c": "6", "option_d": "Unlimited", "correct_option": "C", "explanation": "Maximum 6 attempts are allowed"},
@@ -274,8 +284,8 @@ def seed_questions():
         {"subject": "UPSC", "difficulty": "Hard", "text": "What is the total marks for UPSC Mains?", "option_a": "900", "option_b": "1000", "option_c": "1200", "option_d": "1500", "correct_option": "C", "explanation": "Mains exam is of 1200 marks"},
         {"subject": "UPSC", "difficulty": "Hard", "text": "How many papers are in UPSC Mains?", "option_a": "6", "option_b": "7", "option_c": "8", "option_d": "9", "correct_option": "D", "explanation": "UPSC Mains has 9 papers including essay"},
         {"subject": "UPSC", "difficulty": "Hard", "text": "Interview marks in UPSC CSE?", "option_a": "200", "option_b": "275", "option_c": "300", "option_d": "350", "correct_option": "B", "explanation": "Interview is of 275 marks"},
-        
-        # RAILWAY (100+ questions)
+
+        # RAILWAY
         {"subject": "Railway", "difficulty": "Easy", "text": "Indian Railways was established in?", "option_a": "1850", "option_b": "1853", "option_c": "1856", "option_d": "1860", "correct_option": "B", "explanation": "First train ran in 1853"},
         {"subject": "Railway", "difficulty": "Easy", "text": "Highest railway zone in India is?", "option_a": "Central Railway", "option_b": "South Railway", "option_c": "North Railway", "option_d": "East Railway", "correct_option": "C", "explanation": "Northern Railway is one of the largest"},
         {"subject": "Railway", "difficulty": "Easy", "text": "How many railway zones does India have?", "option_a": "15", "option_b": "16", "option_c": "17", "option_d": "18", "correct_option": "C", "explanation": "India has 17 railway zones"},
@@ -286,8 +296,8 @@ def seed_questions():
         {"subject": "Railway", "difficulty": "Hard", "text": "Total railway network length in India is approximately?", "option_a": "60,000 km", "option_b": "70,000 km", "option_c": "80,000 km", "option_d": "90,000 km", "correct_option": "C", "explanation": "Approximately 68,000 km"},
         {"subject": "Railway", "difficulty": "Hard", "text": "Konkan Railway connects?", "option_a": "Mumbai to Goa", "option_b": "Goa to Kerala", "option_c": "Mumbai to Kerala", "option_d": "Karnataka to Kerala", "correct_option": "C", "explanation": "Konkan Railway connects Mumbai to Kerala via Goa"},
         {"subject": "Railway", "difficulty": "Hard", "text": "Which railway zone handles maximum passengers?", "option_a": "Central", "option_b": "Northern", "option_c": "Eastern", "option_d": "South Central", "correct_option": "B", "explanation": "Northern Railway handles most passengers"},
-        
-        # BANKING (100+ questions)
+
+        # BANKING
         {"subject": "Banking", "difficulty": "Easy", "text": "Who is the current RBI Governor?", "option_a": "Shaktikanta Das", "option_b": "Sanjay Malhotra", "option_c": "Michael Patra", "option_d": "Raghuram Rajan", "correct_option": "B", "explanation": "Sanjay Malhotra is the current RBI Governor"},
         {"subject": "Banking", "difficulty": "Easy", "text": "RBI was established in?", "option_a": "1930", "option_b": "1935", "option_c": "1947", "option_d": "1950", "correct_option": "B", "explanation": "RBI was established on April 1, 1935"},
         {"subject": "Banking", "difficulty": "Easy", "text": "What does NEFT stand for?", "option_a": "National Electronic Fund Transfer", "option_b": "National Express Fund Transfer", "option_c": "National Efficient Fund Transfer", "option_d": "National E-Fund Transfer", "correct_option": "A", "explanation": "NEFT is National Electronic Fund Transfer"},
@@ -298,8 +308,8 @@ def seed_questions():
         {"subject": "Banking", "difficulty": "Hard", "text": "What is Reverse Repo Rate?", "option_a": "Rate RBI borrows from banks", "option_b": "Rate banks borrow from RBI", "option_c": "Rate of interest on deposits", "option_d": "Rate of interest on loans", "correct_option": "A", "explanation": "Reverse Repo is rate at which RBI borrows from banks"},
         {"subject": "Banking", "difficulty": "Hard", "text": "CRR stands for?", "option_a": "Cash Reserve Requirement", "option_b": "Capital Reserve Ratio", "option_c": "Cash Requirement Ratio", "option_d": "Capital Risk Ratio", "correct_option": "A", "explanation": "CRR is Cash Reserve Requirement"},
         {"subject": "Banking", "difficulty": "Hard", "text": "What is the current Cash Reserve Ratio approximately?", "option_a": "2%", "option_b": "4%", "option_c": "6%", "option_d": "8%", "correct_option": "B", "explanation": "Current CRR is approximately 4%"},
-        
-        # INSURANCE (100+ questions)
+
+        # INSURANCE
         {"subject": "Insurance", "difficulty": "Easy", "text": "Life Insurance Corporation was established in?", "option_a": "1950", "option_b": "1956", "option_c": "1960", "option_d": "1965", "correct_option": "B", "explanation": "LIC was established on September 1, 1956"},
         {"subject": "Insurance", "difficulty": "Easy", "text": "What is LIC full form?", "option_a": "Life Insurance Commission", "option_b": "Life Insurance Corporation", "option_c": "Life Investment Corporation", "option_d": "Life Insurance Company", "correct_option": "B", "explanation": "LIC stands for Life Insurance Corporation"},
         {"subject": "Insurance", "difficulty": "Easy", "text": "Premium is paid to buy?", "option_a": "Insurance policy", "option_b": "Investment", "option_c": "Loan", "option_d": "Savings", "correct_option": "A", "explanation": "Premium is paid to buy insurance coverage"},
@@ -310,8 +320,8 @@ def seed_questions():
         {"subject": "Insurance", "difficulty": "Hard", "text": "Risk pooling in insurance means?", "option_a": "Keeping money in pool", "option_b": "Many share same risk", "option_c": "Risk management strategy", "option_d": "Insurance investment", "correct_option": "B", "explanation": "Many policyholders share the risk cost"},
         {"subject": "Insurance", "difficulty": "Hard", "text": "What is insurance underwriting?", "option_a": "Selling insurance", "option_b": "Buying insurance", "option_c": "Assessment of risk", "option_d": "Processing claims", "correct_option": "C", "explanation": "Underwriting is risk assessment and evaluation"},
         {"subject": "Insurance", "difficulty": "Hard", "text": "Moral hazard in insurance refers to?", "option_a": "Dishonest behavior after getting insurance", "option_b": "Insurance fraud", "option_c": "Risk increase", "option_d": "Claim denial", "correct_option": "A", "explanation": "Moral hazard is incentive to increase risk after insuring"},
-        
-        # SSC (100+ questions)
+
+        # SSC
         {"subject": "SSC", "difficulty": "Easy", "text": "What does SSC stand for?", "option_a": "Staff Selection Commission", "option_b": "State Service Commission", "option_c": "Security Selection Committee", "option_d": "Service Selection Commission", "correct_option": "A", "explanation": "SSC stands for Staff Selection Commission"},
         {"subject": "SSC", "difficulty": "Easy", "text": "SSC was established in?", "option_a": "1975", "option_b": "1976", "option_c": "1977", "option_d": "1978", "correct_option": "B", "explanation": "SSC was established on November 4, 1975"},
         {"subject": "SSC", "difficulty": "Easy", "text": "SSC conducts exam for which posts?", "option_a": "All government posts", "option_b": "Group B and C posts", "option_c": "Only bank posts", "option_d": "Only railway posts", "correct_option": "B", "explanation": "SSC conducts exam for Group B and C posts"},
@@ -325,7 +335,44 @@ def seed_questions():
     ]
 
 
+# ---------------------------------------------------------------------------
+# Helper: build a quiz-friendly dict from a raw MongoDB question document
+# ---------------------------------------------------------------------------
+def question_to_quiz_dict(q):
+    return {
+        "id": str(q["_id"]),
+        "subject": q["subject"],
+        "difficulty": q["difficulty"],
+        "text": q["text"],
+        "option_a": q["option_a"],
+        "option_b": q["option_b"],
+        "option_c": q["option_c"],
+        "option_d": q["option_d"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Helper: load an attempt together with its embedded answer docs
+# ---------------------------------------------------------------------------
+def load_attempt_with_answers(attempt_id):
+    """Return a Doc for the attempt with .answers populated, or None."""
+    try:
+        doc = attempts_col.find_one({"_id": ObjectId(attempt_id)})
+    except Exception:
+        return None
+    if not doc:
+        return None
+    attempt = Doc(doc)
+    attempt.answers = to_docs(answers_col.find({"attempt_id": str(doc["_id"])}))
+    return attempt
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 def register_routes(app):
+
+    # ---- public ------------------------------------------------------------
     @app.route("/")
     def index():
         if "user_id" in session:
@@ -337,13 +384,13 @@ def register_routes(app):
         if request.method == "POST":
             username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
-            user = User.query.filter_by(username=username).first()
+            user = users_col.find_one({"username": username})
 
-            if user and check_password_hash(user.password_hash, password):
+            if user and check_password_hash(user["password_hash"], password):
                 session.clear()
-                session["user_id"] = user.id
-                session["username"] = user.username
-                session["role"] = user.role
+                session["user_id"] = str(user["_id"])
+                session["username"] = user["username"]
+                session["role"] = user["role"]
                 flash("Signed in successfully.", "success")
                 return redirect(url_for("dashboard"))
 
@@ -365,18 +412,19 @@ def register_routes(app):
             flash("Password must be at least 6 characters.", "error")
             return redirect(url_for("login"))
 
-        if User.query.filter((User.username == username) | (User.email == email)).first():
+        if users_col.find_one({"$or": [{"username": username}, {"email": email}]}):
             flash("Username or email already exists.", "error")
             return redirect(url_for("login"))
 
-        user = User(
-            username=username,
-            email=email,
-            password_hash=generate_password_hash(password),
-            role=role,
+        users_col.insert_one(
+            {
+                "username": username,
+                "email": email,
+                "password_hash": generate_password_hash(password),
+                "role": role,
+                "created_at": datetime.now(timezone.utc),
+            }
         )
-        db.session.add(user)
-        db.session.commit()
         flash("Account created. You can sign in now.", "success")
         return redirect(url_for("login"))
 
@@ -386,15 +434,15 @@ def register_routes(app):
         flash("You have been logged out.", "success")
         return redirect(url_for("login"))
 
+    # ---- student dashboard -------------------------------------------------
     @app.route("/dashboard")
     @login_required
     def dashboard():
         user = current_user()
-        attempts = (
-            QuizAttempt.query.filter_by(user_id=user.id)
-            .order_by(QuizAttempt.date_taken.desc())
+        attempts = to_docs(
+            attempts_col.find({"user_id": user.id})
+            .sort("date_taken", -1)
             .limit(10)
-            .all()
         )
         return render_template(
             "dashboard.html",
@@ -404,22 +452,21 @@ def register_routes(app):
             cache_buster=int(time()),
         )
 
+    # ---- quiz flow ---------------------------------------------------------
     @app.route("/quiz")
     @login_required
     def quiz_select():
-        subjects = Subject.query.order_by(Subject.id).all()
-        # Count questions per subject dynamically
+        subjects = to_docs(subjects_col.find().sort("_id", 1))
         counts = {}
         for s in subjects:
-            counts[s.name] = Question.query.filter_by(subject=s.name).count()
-        # Add total count for full mock
-        counts["Full-Length Mock"] = Question.query.count()
+            counts[s.name] = questions_col.count_documents({"subject": s.name})
+        counts["Full-Length Mock"] = questions_col.count_documents({})
 
         return render_template(
             "quiz_select.html",
             active_page="quiz_select",
             subjects=subjects,
-            question_counts=counts
+            question_counts=counts,
         )
 
     @app.route("/quiz/start", methods=["POST"])
@@ -429,18 +476,17 @@ def register_routes(app):
         count = clamp_int(request.form.get("num_questions"), 5, 1, 50)
         duration_minutes = clamp_int(request.form.get("duration"), 5, 1, 180)
 
-        query = Question.query
-        if subject != "Full-Length Mock":
-            query = query.filter_by(subject=subject)
+        query_filter = {} if subject == "Full-Length Mock" else {"subject": subject}
+        raw_questions = list(questions_col.find(query_filter))
 
-        questions = query.all()
-        if not questions:
+        if not raw_questions:
             flash("No questions are available for that subject yet.", "error")
             return redirect(url_for("quiz_select"))
 
-        random.shuffle(questions)
-        selected = questions[: min(count, len(questions))]
-        session["quiz_question_ids"] = [question.id for question in selected]
+        random.shuffle(raw_questions)
+        selected = raw_questions[: min(count, len(raw_questions))]
+
+        session["quiz_question_ids"] = [str(q["_id"]) for q in selected]
         session["quiz_subject"] = subject
         session["quiz_duration_seconds"] = duration_minutes * 60
 
@@ -448,7 +494,7 @@ def register_routes(app):
             "quiz.html",
             active_page="quiz",
             quiz_subject=subject,
-            questions=[question.to_quiz_dict() for question in selected],
+            questions=[question_to_quiz_dict(q) for q in selected],
             duration_seconds=duration_minutes * 60,
         )
 
@@ -462,52 +508,79 @@ def register_routes(app):
             flash("No active quiz was found. Please start a new test.", "error")
             return redirect(url_for("quiz_select"))
 
-        answers = parse_answers(request.form.get("answers_json", "{}"))
-        questions = Question.query.filter(Question.id.in_(question_ids)).all()
-        questions_by_id = {question.id: question for question in questions}
+        form_answers = parse_answers(request.form.get("answers_json", "{}"))
+
+        # Fetch questions in original order
+        oids = [ObjectId(qid) for qid in question_ids if qid]
+        raw_questions = list(questions_col.find({"_id": {"$in": oids}}))
+        questions_by_id = {str(q["_id"]): q for q in raw_questions}
         ordered_questions = [questions_by_id[qid] for qid in question_ids if qid in questions_by_id]
+
+        # Pre-generate the attempt ObjectId so answers can reference it
+        attempt_oid = ObjectId()
+        attempt_id_str = str(attempt_oid)
         correct_count = 0
+        answer_docs = []
 
-        attempt = QuizAttempt(
-            user_id=session["user_id"],
-            subject=subject,
-            total_questions=len(ordered_questions),
-            correct_answers=0,
-            percentage=0,
-            time_taken=max(0, int(request.form.get("time_taken") or 0)),
-        )
-        db.session.add(attempt)
-        db.session.flush()
+        for q in ordered_questions:
+            qid_str = str(q["_id"])
+            selected = normalize_option(form_answers.get(qid_str))
+            is_correct = selected == q["correct_option"]
+            if is_correct:
+                correct_count += 1
 
-        for question in ordered_questions:
-            selected = normalize_option(answers.get(str(question.id)) or answers.get(question.id))
-            is_correct = selected == question.correct_option
-            correct_count += 1 if is_correct else 0
-            db.session.add(
-                AttemptAnswer(
-                    attempt_id=attempt.id,
-                    question_id=question.id,
-                    selected_option=selected,
-                    correct_option=question.correct_option,
-                    is_correct=is_correct,
-                )
+            # Embed question data directly in the answer for fast reads
+            answer_docs.append(
+                {
+                    "attempt_id": attempt_id_str,
+                    "question_id": qid_str,
+                    "selected_option": selected,
+                    "correct_option": q["correct_option"],
+                    "is_correct": is_correct,
+                    "text": q["text"],
+                    "subject": q["subject"],
+                    "difficulty": q["difficulty"],
+                    "option_a": q["option_a"],
+                    "option_b": q["option_b"],
+                    "option_c": q["option_c"],
+                    "option_d": q["option_d"],
+                    "explanation": q.get("explanation", ""),
+                }
             )
 
-        attempt.correct_answers = correct_count
-        attempt.percentage = round((correct_count / max(1, len(ordered_questions))) * 100, 2)
-        db.session.commit()
+        total = max(1, len(ordered_questions))
+        pct = round((correct_count / total) * 100, 2)
+
+        # Insert answers
+        if answer_docs:
+            answers_col.insert_many(answer_docs)
+
+        # Insert attempt
+        attempts_col.insert_one(
+            {
+                "_id": attempt_oid,
+                "user_id": session["user_id"],
+                "username": session.get("username", "Unknown"),
+                "subject": subject,
+                "total_questions": len(ordered_questions),
+                "correct_answers": correct_count,
+                "percentage": pct,
+                "time_taken": max(0, int(request.form.get("time_taken") or 0)),
+                "date_taken": datetime.now(timezone.utc),
+            }
+        )
 
         session.pop("quiz_question_ids", None)
         session.pop("quiz_subject", None)
         session.pop("quiz_duration_seconds", None)
 
         flash("Quiz submitted successfully.", "success")
-        return redirect(url_for("quiz_result", attempt_id=attempt.id))
+        return redirect(url_for("quiz_result", attempt_id=attempt_id_str))
 
-    @app.route("/quiz/result/<int:attempt_id>")
+    @app.route("/quiz/result/<attempt_id>")
     @login_required
     def quiz_result(attempt_id):
-        attempt = db.session.get(QuizAttempt, attempt_id)
+        attempt = load_attempt_with_answers(attempt_id)
         if not attempt:
             flash("Attempt not found.", "error")
             return redirect(url_for("dashboard"))
@@ -527,18 +600,22 @@ def register_routes(app):
             flash(f"Error displaying report: {str(e)}", "error")
             return redirect(url_for("dashboard"))
 
+    # ---- admin -------------------------------------------------------------
     @app.route("/admin")
     @login_required
     @admin_required
     def admin():
-        # Get all subjects from database
-        subjects = Subject.query.order_by(Subject.created_at.desc()).all()
+        subjects = to_docs(subjects_col.find().sort("created_at", -1))
+        questions = to_docs(questions_col.find().sort("_id", -1))
+        users = to_docs(users_col.find().sort("created_at", -1))
+        all_attempts = to_docs(attempts_col.find().sort("date_taken", -1))
+
         return render_template(
             "admin.html",
             active_page="admin",
-            questions=Question.query.order_by(Question.id.desc()).all(),
-            users=User.query.order_by(User.created_at.desc()).all(),
-            all_attempts=QuizAttempt.query.order_by(QuizAttempt.date_taken.desc()).all(),
+            questions=questions,
+            users=users,
+            all_attempts=all_attempts,
             subjects=subjects,
             available_subjects=SUBJECTS,
         )
@@ -547,39 +624,47 @@ def register_routes(app):
     @login_required
     @admin_required
     def admin_add_question():
-        question = Question(
-            subject=request.form.get("subject", SUBJECTS[0]),
-            difficulty=request.form.get("difficulty", "Medium"),
-            text=request.form.get("text", "").strip(),
-            option_a=request.form.get("option_a", "").strip(),
-            option_b=request.form.get("option_b", "").strip(),
-            option_c=request.form.get("option_c", "").strip(),
-            option_d=request.form.get("option_d", "").strip(),
-            correct_option=normalize_option(request.form.get("correct_option")) or "A",
-            explanation=request.form.get("explanation", "").strip(),
-        )
+        text = request.form.get("text", "").strip()
+        option_a = request.form.get("option_a", "").strip()
+        option_b = request.form.get("option_b", "").strip()
+        option_c = request.form.get("option_c", "").strip()
+        option_d = request.form.get("option_d", "").strip()
 
-        if not all([question.text, question.option_a, question.option_b, question.option_c, question.option_d]):
+        if not all([text, option_a, option_b, option_c, option_d]):
             flash("Please fill in all question fields.", "error")
             return redirect(url_for("admin"))
 
-        db.session.add(question)
-        db.session.commit()
+        questions_col.insert_one(
+            {
+                "subject": request.form.get("subject", SUBJECTS[0]),
+                "difficulty": request.form.get("difficulty", "Medium"),
+                "text": text,
+                "option_a": option_a,
+                "option_b": option_b,
+                "option_c": option_c,
+                "option_d": option_d,
+                "correct_option": normalize_option(request.form.get("correct_option")) or "A",
+                "explanation": request.form.get("explanation", "").strip(),
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
         flash("Question added to the bank.", "success")
         return redirect(url_for("admin"))
 
-    @app.route("/admin/questions/<int:question_id>/delete", methods=["POST"])
+    @app.route("/admin/questions/<question_id>/delete", methods=["POST"])
     @login_required
     @admin_required
     def admin_delete_question(question_id):
-        question = db.session.get(Question, question_id)
-        if not question:
-            flash("Question not found.", "error")
+        try:
+            result = questions_col.delete_one({"_id": ObjectId(question_id)})
+        except Exception:
+            flash("Invalid question ID.", "error")
             return redirect(url_for("admin"))
 
-        db.session.delete(question)
-        db.session.commit()
-        flash("Question deleted.", "success")
+        if result.deleted_count == 0:
+            flash("Question not found.", "error")
+        else:
+            flash("Question deleted.", "success")
         return redirect(url_for("admin"))
 
     @app.route("/admin/subjects/add", methods=["POST"])
@@ -594,47 +679,52 @@ def register_routes(app):
             flash("Subject name is required.", "error")
             return redirect(url_for("admin"))
 
-        if Subject.query.filter_by(name=name).first():
+        if subjects_col.find_one({"name": name}):
             flash("This subject already exists.", "error")
             return redirect(url_for("admin"))
 
-        subject = Subject(
-            name=name,
-            emoji=emoji,
-            description=description
+        subjects_col.insert_one(
+            {
+                "name": name,
+                "emoji": emoji,
+                "description": description,
+                "difficulty_range": "Mixed",
+                "created_at": datetime.now(timezone.utc),
+            }
         )
-        db.session.add(subject)
-        db.session.commit()
-        
-        # Add subject to SUBJECTS list if not already there
+
         if name not in SUBJECTS:
             SUBJECTS.append(name)
-        
+
         flash(f"Subject '{name}' added successfully.", "success")
         return redirect(url_for("admin"))
 
-    @app.route("/admin/subjects/<int:subject_id>/delete", methods=["POST"])
+    @app.route("/admin/subjects/<subject_id>/delete", methods=["POST"])
     @login_required
     @admin_required
     def admin_delete_subject(subject_id):
-        subject = db.session.get(Subject, subject_id)
-        if not subject:
+        try:
+            subject_doc = subjects_col.find_one({"_id": ObjectId(subject_id)})
+        except Exception:
+            flash("Invalid subject ID.", "error")
+            return redirect(url_for("admin"))
+
+        if not subject_doc:
             flash("Subject not found.", "error")
             return redirect(url_for("admin"))
 
-        # Remove from SUBJECTS list
-        if subject.name in SUBJECTS:
-            SUBJECTS.remove(subject.name)
+        if subject_doc["name"] in SUBJECTS:
+            SUBJECTS.remove(subject_doc["name"])
 
-        db.session.delete(subject)
-        db.session.commit()
-        flash(f"Subject '{subject.name}' deleted.", "success")
+        subjects_col.delete_one({"_id": subject_doc["_id"]})
+        flash(f"Subject '{subject_doc['name']}' deleted.", "success")
         return redirect(url_for("admin"))
 
+    # ---- charts (SVG) ------------------------------------------------------
     @app.route("/charts/accuracy.svg")
     @login_required
     def accuracy_chart():
-        attempts = QuizAttempt.query.filter_by(user_id=session["user_id"]).all()
+        attempts = to_docs(attempts_col.find({"user_id": session["user_id"]}))
         subject_scores = defaultdict(list)
         for attempt in attempts:
             if attempt.subject == "Full-Length Mock":
@@ -648,19 +738,18 @@ def register_routes(app):
     @app.route("/charts/trend.svg")
     @login_required
     def trend_chart():
-        attempts = (
-            QuizAttempt.query.filter_by(user_id=session["user_id"])
-            .order_by(QuizAttempt.date_taken.asc())
-            .all()
+        attempts = to_docs(
+            attempts_col.find({"user_id": session["user_id"]}).sort("date_taken", 1)
         )
-        labels = [str(index + 1) for index, _attempt in enumerate(attempts)]
-        values = [attempt.percentage for attempt in attempts]
+        labels = [str(index + 1) for index, _a in enumerate(attempts)]
+        values = [a.percentage for a in attempts]
         return svg_response(line_chart_svg(labels, values, "Attempt Trend"))
 
-    @app.route("/download/result/<int:attempt_id>/pdf")
+    # ---- PDF downloads -----------------------------------------------------
+    @app.route("/download/result/<attempt_id>/pdf")
     @login_required
     def download_result_pdf(attempt_id):
-        attempt = db.session.get(QuizAttempt, attempt_id)
+        attempt = load_attempt_with_answers(attempt_id)
         if not attempt:
             flash("Attempt not found.", "error")
             return redirect(url_for("dashboard"))
@@ -682,35 +771,35 @@ def register_routes(app):
         pdf.cell(200, 10, text=f"Percentage: {attempt.percentage}%", ln=True)
         pdf.cell(200, 10, text=f"Time Taken: {attempt.time_taken // 60}m {attempt.time_taken % 60}s", ln=True)
         pdf.ln(5)
-        
-        pdf.set_font("Arial", 'B', 10)
+
+        pdf.set_font("Arial", "B", 10)
         pdf.cell(100, 10, "Question", border=1)
         pdf.cell(30, 10, "Your Answer", border=1)
         pdf.cell(30, 10, "Correct Answer", border=1)
         pdf.cell(30, 10, "Result", border=1)
         pdf.ln(10)
-        
+
         pdf.set_font("Arial", size=10)
         for answer in attempt.answers:
             result = "Correct" if answer.is_correct else "Incorrect"
-            pdf.cell(100, 10, str(answer.text)[:45].encode('latin-1', 'replace').decode('latin-1'), border=1)
-            pdf.cell(30, 10, str(answer.selected_option or "None").encode('latin-1', 'replace').decode('latin-1'), border=1)
-            pdf.cell(30, 10, str(answer.correct_option).encode('latin-1', 'replace').decode('latin-1'), border=1)
-            pdf.cell(30, 10, result.encode('latin-1', 'replace').decode('latin-1'), border=1)
+            pdf.cell(100, 10, str(answer.text)[:45].encode("latin-1", "replace").decode("latin-1"), border=1)
+            pdf.cell(30, 10, str(answer.selected_option or "None").encode("latin-1", "replace").decode("latin-1"), border=1)
+            pdf.cell(30, 10, str(answer.correct_option).encode("latin-1", "replace").decode("latin-1"), border=1)
+            pdf.cell(30, 10, result.encode("latin-1", "replace").decode("latin-1"), border=1)
             pdf.ln(10)
-            
+
         return Response(
             bytes(pdf.output()),
             mimetype="application/pdf",
-            headers={"Content-Disposition": f"attachment;filename=quiz_result_{attempt_id}.pdf"}
+            headers={"Content-Disposition": f"attachment;filename=quiz_result_{attempt_id}.pdf"},
         )
 
     @app.route("/download/questions/<subject>/pdf")
     @login_required
     @admin_required
     def download_questions_pdf(subject):
-        questions = Question.query.filter_by(subject=subject).all()
-        if not questions:
+        raw_questions = list(questions_col.find({"subject": subject}))
+        if not raw_questions:
             flash("No questions found for this subject.", "error")
             return redirect(url_for("admin"))
 
@@ -719,26 +808,26 @@ def register_routes(app):
         pdf.set_font("Arial", size=12)
         pdf.cell(200, 10, text=f"{subject} Questions Bank", ln=True, align="C")
         pdf.ln(5)
-        
+
         pdf.set_font("Arial", size=10)
-        for i, q in enumerate(questions, 1):
-            pdf.multi_cell(0, 8, text=f"Q{i} [{q.difficulty}]: {q.text}".encode('latin-1', 'replace').decode('latin-1'))
-            pdf.multi_cell(0, 8, text=f"A: {q.option_a} | B: {q.option_b} | C: {q.option_c} | D: {q.option_d}".encode('latin-1', 'replace').decode('latin-1'))
-            pdf.multi_cell(0, 8, text=f"Correct: {q.correct_option} | Exp: {q.explanation or 'None'}".encode('latin-1', 'replace').decode('latin-1'))
+        for i, q in enumerate(raw_questions, 1):
+            pdf.multi_cell(0, 8, text=f"Q{i} [{q['difficulty']}]: {q['text']}".encode("latin-1", "replace").decode("latin-1"))
+            pdf.multi_cell(0, 8, text=f"A: {q['option_a']} | B: {q['option_b']} | C: {q['option_c']} | D: {q['option_d']}".encode("latin-1", "replace").decode("latin-1"))
+            pdf.multi_cell(0, 8, text=f"Correct: {q['correct_option']} | Exp: {q.get('explanation') or 'None'}".encode("latin-1", "replace").decode("latin-1"))
             pdf.ln(5)
 
         return Response(
             bytes(pdf.output()),
             mimetype="application/pdf",
-            headers={"Content-Disposition": f"attachment;filename={subject.replace(' ', '_')}_questions.pdf"}
+            headers={"Content-Disposition": f"attachment;filename={subject.replace(' ', '_')}_questions.pdf"},
         )
 
     @app.route("/download/all-attempts/pdf")
     @login_required
     def download_attempts_pdf():
         user_id = session["user_id"]
-        attempts = QuizAttempt.query.filter_by(user_id=user_id).order_by(QuizAttempt.date_taken.desc()).all()
-        
+        attempts = to_docs(attempts_col.find({"user_id": user_id}).sort("date_taken", -1))
+
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
@@ -746,8 +835,8 @@ def register_routes(app):
         pdf.ln(5)
         pdf.cell(200, 10, text=f"Student Name: {session.get('username')}", ln=True)
         pdf.ln(5)
-        
-        pdf.set_font("Arial", 'B', 10)
+
+        pdf.set_font("Arial", "B", 10)
         pdf.cell(50, 10, "Date", border=1)
         pdf.cell(40, 10, "Subject", border=1)
         pdf.cell(20, 10, "Total Q", border=1)
@@ -755,7 +844,7 @@ def register_routes(app):
         pdf.cell(30, 10, "Percentage", border=1)
         pdf.cell(30, 10, "Time", border=1)
         pdf.ln(10)
-        
+
         pdf.set_font("Arial", size=10)
         for attempt in attempts:
             pdf.cell(50, 10, str(attempt.date_taken)[:19], border=1)
@@ -769,11 +858,8 @@ def register_routes(app):
         return Response(
             bytes(pdf.output()),
             mimetype="application/pdf",
-            headers={"Content-Disposition": "attachment;filename=quiz_attempts.pdf"}
+            headers={"Content-Disposition": "attachment;filename=quiz_attempts.pdf"},
         )
-
-
-
 
     @app.route("/admin/questions/upload_pdf", methods=["POST"])
     @login_required
@@ -781,56 +867,58 @@ def register_routes(app):
     def admin_upload_questions_pdf():
         subject = request.form.get("subject", SUBJECTS[0])
         difficulty = request.form.get("difficulty", "Medium")
-        
-        if 'pdf_file' not in request.files:
+
+        if "pdf_file" not in request.files:
             flash("No file part", "error")
-            return redirect(url_for('admin'))
-            
-        file = request.files['pdf_file']
-        if file.filename == '':
+            return redirect(url_for("admin"))
+
+        file = request.files["pdf_file"]
+        if file.filename == "":
             flash("No selected file", "error")
-            return redirect(url_for('admin'))
-            
-        if file and file.filename.endswith('.pdf'):
+            return redirect(url_for("admin"))
+
+        if file and file.filename.endswith(".pdf"):
             try:
                 reader = PyPDF2.PdfReader(file)
                 text = ""
                 for page in reader.pages:
                     text += page.extract_text() + "\n"
-                
-                # Basic parsing logic: Split by lines, assume each line is a question
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
-                added = 0
+
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
+                docs_to_insert = []
+                now = datetime.now(timezone.utc)
                 for line in lines:
                     if len(line) > 10:
-                        question = Question(
-                            subject=subject,
-                            difficulty=difficulty,
-                            text=line[:500],
-                            option_a="A",
-                            option_b="B",
-                            option_c="C",
-                            option_d="D",
-                            correct_option="A",
-                            explanation="Extracted from PDF"
+                        docs_to_insert.append(
+                            {
+                                "subject": subject,
+                                "difficulty": difficulty,
+                                "text": line[:500],
+                                "option_a": "A",
+                                "option_b": "B",
+                                "option_c": "C",
+                                "option_d": "D",
+                                "correct_option": "A",
+                                "explanation": "Extracted from PDF",
+                                "created_at": now,
+                            }
                         )
-                        db.session.add(question)
-                        added += 1
-                        
-                db.session.commit()
-                flash(f"Successfully extracted and added {added} questions.", "success")
+
+                if docs_to_insert:
+                    questions_col.insert_many(docs_to_insert)
+                flash(f"Successfully extracted and added {len(docs_to_insert)} questions.", "success")
             except Exception as e:
                 flash(f"Error reading PDF: {str(e)}", "error")
         else:
             flash("Invalid file format. Please upload a PDF.", "error")
-            
-        return redirect(url_for('admin'))
+
+        return redirect(url_for("admin"))
 
     @app.route("/dashboard/download_question_bank_pdf")
     @login_required
     def download_question_bank_pdf():
-        questions = Question.query.all()
-        if not questions:
+        raw_questions = list(questions_col.find().limit(200))
+        if not raw_questions:
             flash("No questions found in the bank.", "error")
             return redirect(url_for("dashboard"))
 
@@ -839,23 +927,26 @@ def register_routes(app):
         pdf.set_font("Arial", size=12)
         pdf.cell(200, 10, text="Complete Question Bank", ln=True, align="C")
         pdf.ln(5)
-        
+
         pdf.set_font("Arial", size=10)
-        for i, q in enumerate(questions[:200], 1): # Limit to 200 to prevent huge PDFs
-            pdf.multi_cell(0, 8, text=f"Q{i} [{q.subject} - {q.difficulty}]: {q.text}".encode('latin-1', 'replace').decode('latin-1'))
-            pdf.multi_cell(0, 8, text=f"A: {q.option_a} | B: {q.option_b} | C: {q.option_c} | D: {q.option_d}".encode('latin-1', 'replace').decode('latin-1'))
-            pdf.multi_cell(0, 8, text=f"Correct: {q.correct_option}".encode('latin-1', 'replace').decode('latin-1'))
+        for i, q in enumerate(raw_questions, 1):
+            pdf.multi_cell(0, 8, text=f"Q{i} [{q['subject']} - {q['difficulty']}]: {q['text']}".encode("latin-1", "replace").decode("latin-1"))
+            pdf.multi_cell(0, 8, text=f"A: {q['option_a']} | B: {q['option_b']} | C: {q['option_c']} | D: {q['option_d']}".encode("latin-1", "replace").decode("latin-1"))
+            pdf.multi_cell(0, 8, text=f"Correct: {q['correct_option']}".encode("latin-1", "replace").decode("latin-1"))
             pdf.ln(5)
 
         return Response(
             bytes(pdf.output()),
             mimetype="application/pdf",
-            headers={"Content-Disposition": "attachment;filename=question_bank.pdf"}
+            headers={"Content-Disposition": "attachment;filename=question_bank.pdf"},
         )
 
 
+# ---------------------------------------------------------------------------
+# Dashboard stats
+# ---------------------------------------------------------------------------
 def dashboard_stats(user_id):
-    attempts = QuizAttempt.query.filter_by(user_id=user_id).order_by(QuizAttempt.date_taken.asc()).all()
+    attempts = to_docs(attempts_col.find({"user_id": user_id}).sort("date_taken", 1))
     has_data = bool(attempts)
 
     if not has_data:
@@ -882,7 +973,7 @@ def dashboard_stats(user_id):
     }
     strongest_subject = max(averages, key=averages.get)
     weakest_subject = min(averages, key=averages.get)
-    overall_accuracy = round(sum(attempt.percentage for attempt in attempts) / len(attempts), 1)
+    overall_accuracy = round(sum(a.percentage for a in attempts) / len(attempts), 1)
 
     tips = [
         f"Focus your next practice session on {weakest_subject}; your current average is {averages[weakest_subject]}%.",
@@ -904,6 +995,9 @@ def dashboard_stats(user_id):
     }
 
 
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 def clamp_int(value, default, minimum, maximum):
     try:
         number = int(value)
@@ -927,6 +1021,9 @@ def normalize_option(value):
     return option if option in {"A", "B", "C", "D"} else None
 
 
+# ---------------------------------------------------------------------------
+# SVG chart rendering
+# ---------------------------------------------------------------------------
 def svg_response(svg):
     return Response(svg, mimetype="image/svg+xml")
 
@@ -995,10 +1092,12 @@ def chart_shell(width, height, title, body):
 </svg>"""
 
 
+# ---------------------------------------------------------------------------
+# Application entry point
+# ---------------------------------------------------------------------------
 app = create_app()
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="127.0.0.1", port=port, debug=True)
-
